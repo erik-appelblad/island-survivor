@@ -33,8 +33,9 @@
 // ===== 1. CONFIG =====
 const CONFIG = {
   MAP_SIZE: 48,
-  DAY_LENGTH: 300, NIGHT_START: 150, FADE: 15,
-  START_LIVES: 10, MAX_HUNGER: 100, HUNGER_DRAIN: 1 / 3, SPRINT_HUNGER_MULT: 2, HUNGER_AFTER_STARVE: 50,
+  DAY_LENGTH: 240, NIGHT_START: 120, FADE: 15,
+  START_LIVES: 10, MAX_HUNGER: 100, HUNGER_DRAIN: 2 / 3, SPRINT_HUNGER_MULT: 2, HUNGER_AFTER_STARVE: 50,
+  EXIT_PORTAL_DIST: [2, 5], EXIT_PORTAL_SCALE: 1.7,
   WALK_SPEED: 3.2, SPRINT_SPEED: 4.8, FOREST_SLOW: 0.65, PLAYER_RADIUS: 0.25, MONSTER_RADIUS: 0.3,
   INVULN_TIME: 3, PORTAL_COOLDOWN: 2, PORTAL_PAIRS: 3, HIDDEN_PORTAL_RANGE: 2,
   MONSTER_BASE: 4, MONSTER_PER_DAY: 2, MONSTER_MAX: 16,
@@ -329,17 +330,26 @@ let state;
 const keys = new Set();
 
 function newGame(seed = Math.floor(Math.random() * 1e9)) {
-  const world = generateIsland(seed);
-  const p = { x: world.start.x, y: world.start.y, dz: 0, hunger: CONFIG.MAX_HUNGER, lives: CONFIG.START_LIVES,
+  const p = { x: 0, y: 0, dz: 0, hunger: CONFIG.MAX_HUNGER, lives: CONFIG.START_LIVES,
     invuln: 0, portalCd: 0, moving: false, sprinting: false, face: 1 };
-  p.dz = elevAt(world, p.x, p.y);
   state = {
-    mode: 'title', world, ground: buildGround(world), t: 0, day: 1, nightActive: false, player: p,
-    monsters: [], items: [], floaters: [], toasts: [], stats: { food: 0 },
-    secrets: { grove: false, cave: false, wreck: false }, wreckOpened: false,
-    flash: 0, warp: 0, timeScale: 1, mushroomT: 2, anim: 0, hover: null, interactQueued: false,
-    cam: toScreen(p.x, p.y, p.dz),
+    mode: 'title', t: 0, day: 1, island: 1, nightActive: false, player: p,
+    floaters: [], toasts: [], stats: { food: 0 },
+    flash: 0, warp: 0, timeScale: 1, anim: 0, interactQueued: false,
   };
+  loadIsland(generateIsland(seed));
+}
+
+// Puts the player on a fresh island; lives, hunger, clock and stats carry over.
+function loadIsland(world) {
+  const s = state, p = state.player;
+  Object.assign(s, {
+    world, ground: buildGround(world), monsters: [], items: [], exitPortal: null, hover: null,
+    secrets: { grove: false, cave: false, wreck: false }, wreckOpened: false, mushroomT: 2,
+  });
+  p.x = world.start.x; p.y = world.start.y; p.dz = elevAt(world, p.x, p.y);
+  p.invuln = 0; p.portalCd = 0;
+  s.cam = toScreen(p.x, p.y, p.dz);
   for (const pl of world.palms) if (Math.random() < 0.5) dropCoconut(pl);
   for (let i = 0; i < 4; i++) spawnMushroom();
 }
@@ -362,9 +372,16 @@ function tryMove(ent, dx, dy, r, forMonster) {
 function update(dt) {
   const s = state, p = s.player;
   s.t += dt * s.timeScale;
-  if (s.t >= CONFIG.DAY_LENGTH) { s.t -= CONFIG.DAY_LENGTH; s.day++; toast(`Day ${s.day}: the sun rises`); }
+  if (s.t >= CONFIG.DAY_LENGTH) {
+    s.t -= CONFIG.DAY_LENGTH; s.day++;
+    toast(`Day ${s.day}: you survived the night!`);
+    spawnExitPortal();
+  }
   const ph = phaseInfo(s.t);
-  if (ph.isNight && !s.nightActive) { s.nightActive = true; spawnMonsters(); toast('Night falls... beware the monsters'); }
+  if (ph.isNight && !s.nightActive) {
+    s.nightActive = true; spawnMonsters(); toast('Night falls... beware the monsters');
+    if (s.exitPortal) { s.exitPortal = null; toast('The white portal has faded'); }
+  }
   else if (!ph.isNight && s.nightActive) { s.nightActive = false; s.monsters.length = 0; }
   if (ph.dawn) for (const m of s.monsters) m.fading = true;
 
@@ -540,6 +557,7 @@ function findInteractable() {
   for (const g of w.goldTrees) if (g.hasFruit) consider(g, 'golden', CONFIG.INTERACT_RANGE, 'Eat golden fruit');
   if (!s.wreckOpened) consider(w.wreck, 'wreck', 1.4, 'Search the shipwreck');
   if (p.portalCd <= 0) for (const pt of w.portals) if (pt.discovered) consider(pt, 'portal', 0.8, 'Enter portal');
+  if (s.exitPortal) consider(s.exitPortal, 'exit', 1.1, 'Travel to a new island');
   return best;
 }
 
@@ -569,7 +587,30 @@ function interact(h) {
       break;
     }
     case 'portal': teleport(o); break;
+    case 'exit': travelToNewIsland(); break;
   }
+}
+
+// After a survived night, a white portal opens a few tiles from the player.
+function spawnExitPortal() {
+  const s = state, w = s.world, p = s.player, N = w.N, [lo, hi] = CONFIG.EXIT_PORTAL_DIST;
+  const cands = [];
+  for (let k = 0; k < N * N; k++) {
+    const x = k % N + 0.5, y = ((k / N) | 0) + 0.5, d = Math.hypot(x - p.x, y - p.y);
+    if (!w.reach[k] || d < lo || d > hi || !isWalkable(w.types[k], true)) continue;
+    if (w.portals.some(q => Math.hypot(q.x - x, q.y - y) < 2)) continue;
+    cands.push({ x, y });
+  }
+  s.exitPortal = cands.length ? cands[Math.floor(Math.random() * cands.length)] : { x: w.start.x, y: w.start.y };
+  toast('A white portal has opened! It leads to a new island');
+}
+
+function travelToNewIsland() {
+  const s = state;
+  s.island++;
+  loadIsland(generateIsland(Math.floor(Math.random() * 1e9)));
+  s.warp = 1;
+  toast(`Island ${s.island}: a new shore to explore`);
 }
 
 function teleport(pt) {
@@ -726,18 +767,20 @@ function drawItem(kind, x, y) {
     for (const [bx, by] of [[-2.5, -3], [2.5, -3], [0, -6]]) ellipse(ctx, x + bx, y + by, 2.6, 2.6, '#d8243a');
   }
 }
-function drawPortal(pt, x, y, t) {
-  const col = PORTAL_COLORS[pt.pair], cy = y - 22;
-  ellipse(ctx, x, y, 17, 7, rgba(col, 0.3));
-  const g = ctx.createRadialGradient(x, cy, 2, x, cy, 20);
+// s scales the portal; the exit portal is a bigger white one with a pulsing halo.
+function drawPortal(col, x, y, t, s = 1, swirl = 'rgba(255,255,255,0.8)') {
+  const cy = y - 22 * s;
+  ellipse(ctx, x, y, 17 * s, 7 * s, rgba(col, 0.3));
+  if (s > 1) ellipse(ctx, x, cy, (16 + Math.sin(t * 4) * 2) * s, (26 + Math.sin(t * 4) * 2) * s, rgba(col, 0.18));
+  const g = ctx.createRadialGradient(x, cy, 2, x, cy, 20 * s);
   g.addColorStop(0, 'rgba(255,255,255,0.9)'); g.addColorStop(0.5, rgba(col, 0.6)); g.addColorStop(1, rgba(col, 0.05));
-  ellipse(ctx, x, cy, 11, 20, g);
+  ellipse(ctx, x, cy, 11 * s, 20 * s, g);
   ctx.strokeStyle = col; ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.ellipse(x, cy, 11, 20, 0, 0, TAU); ctx.stroke();
-  ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.ellipse(x, cy, 11 * s, 20 * s, 0, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = swirl; ctx.lineWidth = 1.5;
   for (let k = 0; k < 3; k++) {
     const a = t * 3 + k * 2.1;
-    ctx.beginPath(); ctx.ellipse(x, cy, 4 + k * 2.5, 9 + k * 3.5, 0, a, a + 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x, cy, (4 + k * 2.5) * s, (9 + k * 3.5) * s, 0, a, a + 2); ctx.stroke();
   }
 }
 function drawPlayer(p, x, y, t) {
@@ -801,6 +844,7 @@ function drawNight(ph, ox, oy, vw, vh) {
   };
   light(p.x, p.y, p.dz + 16, CONFIG.LIGHT_RADIUS * (1 + Math.sin(s.anim * 8) * 0.02));
   for (const pt of s.world.portals) if (pt.discovered) light(pt.x, pt.y, elevAt(s.world, pt.x, pt.y) + 22, 60);
+  if (s.exitPortal) light(s.exitPortal.x, s.exitPortal.y, elevAt(s.world, s.exitPortal.x, s.exitPortal.y) + 37, 110);
   dctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(dark, 0, 0, vw, vh);
   const tint = d < 1 ? Math.sin(d * Math.PI) * 0.18 : 0;
@@ -829,8 +873,8 @@ function drawHUD(ph, vw, vh) {
   if (frac > 0.02) { rrect(ctx, 76, 53, 176 * frac, 12, 6); ctx.fill(); }
 
   // Clock, day, secrets
-  const px = vw - 212;
-  ctx.fillStyle = 'rgba(0,0,0,0.4)'; rrect(ctx, px, 12, 200, 76, 10); ctx.fill();
+  const px = vw - 236;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)'; rrect(ctx, px, 12, 224, 76, 10); ctx.fill();
   const cx = px + 36, cy = 50, r = 24;
   ctx.fillStyle = '#f7d774'; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, -Math.PI / 2, Math.PI / 2); ctx.fill();
   ctx.fillStyle = '#2b3570'; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, Math.PI / 2, Math.PI * 1.5); ctx.fill();
@@ -839,7 +883,7 @@ function drawHUD(ph, vw, vh) {
   ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * (r - 4), cy + Math.sin(a) * (r - 4)); ctx.stroke();
   ellipse(ctx, cx, cy, 3, 3, '#fff');
   ctx.textAlign = 'left'; ctx.fillStyle = '#fff';
-  ctx.font = '700 16px system-ui, sans-serif'; ctx.fillText(`Day ${s.day}`, px + 72, 30);
+  ctx.font = '700 16px system-ui, sans-serif'; ctx.fillText(`Day ${s.day} · Island ${s.island}`, px + 72, 30);
   ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = ph.isNight ? '#aab8ff' : '#ffe08a';
   ctx.fillText(`${ph.isNight ? 'Night' : 'Day'}: ${fmt(ph.timeLeft)} left`, px + 72, 50);
   ctx.fillStyle = '#cfe0f5';
@@ -867,7 +911,7 @@ function drawPrompt(ox, oy) {
   const s = state, h = s.hover;
   if (!h || s.mode !== 'play') return;
   const sc = toScreen(h.obj.x, h.obj.y, elevAt(s.world, h.obj.x, h.obj.y));
-  const x = sc.x + ox, y = sc.y + oy - (h.type === 'portal' ? 60 : 48), text = `[E] ${h.label}`;
+  const x = sc.x + ox, y = sc.y + oy - (h.type === 'exit' ? 90 : h.type === 'portal' ? 60 : 48), text = `[E] ${h.label}`;
   ctx.font = '600 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const w = ctx.measureText(text).width + 18;
   ctx.fillStyle = 'rgba(10,20,40,0.85)'; rrect(ctx, x - w / 2, y - 12, w, 24, 8); ctx.fill();
@@ -901,7 +945,9 @@ function render(realDt) {
   for (const g of w.goldTrees) add(g.x, g.y, ground(g), g.x + g.y, (X, Y) => drawGoldTree(X, Y, g.hasFruit, t));
   add(w.wreck.x, w.wreck.y, ground(w.wreck), w.wreck.x + w.wreck.y, (X, Y) => drawWreck(X, Y, s.wreckOpened));
   for (const it of s.items) add(it.x, it.y, ground(it), it.x + it.y - 0.05, (X, Y) => drawItem(it.kind, X, Y));
-  for (const pt of w.portals) if (pt.discovered) add(pt.x, pt.y, ground(pt), pt.x + pt.y - 0.02, (X, Y) => drawPortal(pt, X, Y, t));
+  for (const pt of w.portals) if (pt.discovered) add(pt.x, pt.y, ground(pt), pt.x + pt.y - 0.02, (X, Y) => drawPortal(PORTAL_COLORS[pt.pair], X, Y, t));
+  const ep = s.exitPortal;
+  if (ep) add(ep.x, ep.y, ground(ep), ep.x + ep.y - 0.02, (X, Y) => drawPortal('#ffffff', X, Y, t, CONFIG.EXIT_PORTAL_SCALE, 'rgba(120,170,255,0.9)'));
   for (const m of s.monsters) add(m.x, m.y, m.dz, m.x + m.y, (X, Y) => eyes.push({ x: X, y: drawMonster(m, X, Y, t), a: m.alpha }));
   add(p.x, p.y, p.dz, p.x + p.y, (X, Y) => drawPlayer(p, X, Y, t));
   list.sort((a, b) => a.d - b.d);
@@ -929,7 +975,8 @@ const overlay = document.getElementById('overlay'), panel = document.getElementB
 const SCREENS = {
   title: () => `
     <h1>Island Survival</h1>
-    <p>Gather food by day. Hide from the monsters by night. A full day lasts 5 minutes.</p>
+    <p>Gather food by day. Hide from the monsters by night. Day and night last 2 minutes each.
+      Survive a night and a white portal opens to a new island.</p>
     <div class="controls">
       <kbd>WASD / Arrows</kbd><span>Move</span>
       <kbd>Shift</kbd><span>Sprint (you get hungry faster)</span>
@@ -941,7 +988,7 @@ const SCREENS = {
   pause: () => `<h1>Paused</h1><p>Press P or Esc to resume.</p><button data-action="resume">Resume</button>`,
   over: () => `
     <h1>Game Over</h1>
-    <p>You reached day ${state.day}.</p>
+    <p>You reached day ${state.day} on island ${state.island}.</p>
     <p>Food eaten: ${state.stats.food} · Secrets found: ${Object.values(state.secrets).filter(Boolean).length}/3</p>
     <button data-action="restart">Play again</button>`,
 };

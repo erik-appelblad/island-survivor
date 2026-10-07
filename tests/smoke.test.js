@@ -35,19 +35,27 @@ const monster = (x, y) => ({ x, y, dz: 0, alpha: 1, fading: false, state: 'chase
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
+test('day and night are 2 minutes each', () => {
+  assert.equal(G.CONFIG.NIGHT_START, 120);
+  assert.equal(G.CONFIG.DAY_LENGTH - G.CONFIG.NIGHT_START, 120);
+});
+
 test('phaseInfo: day, dusk, night and dawn', () => {
+  const { DAY_LENGTH: L, NIGHT_START: ns, FADE: f } = G.CONFIG;
   assert.equal(G.phaseInfo(0).isNight, false);
   assert.equal(G.phaseInfo(0).darkness, 0);
-  assert.equal(G.phaseInfo(142.5).darkness, 0.5);
-  assert.equal(G.phaseInfo(200).isNight, true);
-  assert.equal(G.phaseInfo(200).darkness, 1);
-  assert.equal(G.phaseInfo(299).dawn, true);
+  assert.equal(G.phaseInfo(ns - f / 2).darkness, 0.5);
+  assert.equal(G.phaseInfo(ns + 1).isNight, true);
+  assert.equal(G.phaseInfo(ns + 1).darkness, 1);
+  assert.equal(G.phaseInfo(L - 1).dawn, true);
 });
 
 test('updateHunger: drain, sprint and starvation', () => {
-  assert.ok(Math.abs(G.updateHunger(100, 3, false).hunger - 99) < 1e-9);
-  assert.ok(Math.abs(G.updateHunger(100, 3, true).hunger - 98) < 1e-9);
+  const d = G.CONFIG.HUNGER_DRAIN;
+  assert.ok(Math.abs(G.updateHunger(100, 3, false).hunger - (100 - 3 * d)) < 1e-9);
+  assert.ok(Math.abs(G.updateHunger(100, 3, true).hunger - (100 - 3 * d * G.CONFIG.SPRINT_HUNGER_MULT)) < 1e-9);
   assert.deepEqual(G.updateHunger(1, 6, false), { hunger: G.CONFIG.HUNGER_AFTER_STARVE, starved: true });
+  assert.ok(G.CONFIG.MAX_HUNGER / d <= 150, 'a full stomach lasts at most 2.5 minutes');
 });
 
 test('applyLifeLoss: game over only on the last life', () => {
@@ -127,6 +135,39 @@ test('a monster catch costs a life, and the last life ends the game', () => {
   st().monsters = [monster(p.x, p.y)];
   G.update(STEP);
   assert.equal(st().mode, 'over');
+});
+
+test('surviving the night opens a white portal that leads to a new island', () => {
+  G.newGame(7); G.startPlay();
+  const p = st().player, oldWorld = st().world;
+  st().t = G.CONFIG.DAY_LENGTH - 0.001;
+  G.update(STEP);
+  const ep = st().exitPortal;
+  assert.ok(ep, 'exit portal spawned at dawn');
+  const d = Math.hypot(ep.x - p.x, ep.y - p.y);
+  assert.ok(d >= G.CONFIG.EXIT_PORTAL_DIST[0] && d <= G.CONFIG.EXIT_PORTAL_DIST[1] + 1, `portal distance ${d}`);
+
+  Object.assign(p, { x: ep.x, y: ep.y, lives: 6, hunger: 40 });
+  st().secrets.grove = true;
+  st().interactQueued = true;
+  G.update(STEP);
+  assert.notEqual(st().world, oldWorld, 'new island generated');
+  assert.equal(st().island, 2);
+  assert.equal(st().exitPortal, null);
+  assert.equal(p.lives, 6, 'lives carry over');
+  assert.ok(p.hunger > 39, 'hunger carries over');
+  assert.equal(st().secrets.grove, false, 'secrets reset per island');
+  assert.equal(p.x, st().world.start.x);
+});
+
+test('the white portal fades at nightfall if unused', () => {
+  G.newGame(7); G.startPlay();
+  st().t = G.CONFIG.DAY_LENGTH - 0.001;
+  G.update(STEP);
+  assert.ok(st().exitPortal);
+  st().t = G.CONFIG.NIGHT_START - 0.001;
+  G.update(STEP);
+  assert.equal(st().exitPortal, null);
 });
 
 let failed = 0;

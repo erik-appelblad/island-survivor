@@ -1,6 +1,6 @@
 # Island Survival
 
-A small 2.5D isometric survival game that runs in the browser. Collect food on a generated island by day, and avoid the monsters by night. A full day lasts 5 minutes (2.5 min of day, 2.5 min of night), and you have 10 lives.
+A small 2.5D isometric survival game that runs in the browser. Collect food on a generated island by day, and avoid the monsters by night. Day and night last 2 minutes each, and you have 10 lives. Survive a night and a white portal takes you to a new island.
 
 The whole game is one self-contained file, [src/index.html](src/index.html), with no dependencies and no build step.
 
@@ -15,9 +15,10 @@ npm run dev    # serves src/ with npx serve
 ## How it plays
 
 - **Moving:** WASD or the arrow keys move you, Shift sprints, and E eats food, searches the wreck or uses a portal. P or Esc pauses.
-- **Hunger and lives:** hunger runs out in about 5 minutes. When it hits 0 you lose a life and hunger refills to half. A monster catch also costs a life and sends you back to the beach.
+- **Hunger and lives:** hunger runs out in about 2.5 minutes, so keep eating. When it hits 0 you lose a life and hunger refills to half. A monster catch also costs a life and sends you back to the beach.
 - **Night:** monsters appear at nightfall, and 2 more come each night. They chase you if you move nearby, but you can outrun them by sprinting. They can't follow you through a portal or into the cave.
 - **Portals:** there are 3 linked portal pairs that teleport you across the island. One pair is hidden until you get close to it.
+- **New islands:** each time you survive a night, a big white portal opens near you. Enter it during the day to travel to a brand-new island. Your lives, hunger and day count carry over, and the secrets reset. If you don't use it, it fades at nightfall.
 - **Secrets:**
   - **Hidden grove:** fruit trees that fill your hunger completely.
   - **Cave shelter:** a safe hiding spot at night.
