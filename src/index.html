@@ -1,0 +1,1014 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Island Survival</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1d5f9e; overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 12, 30, .55); }
+  #overlay.hidden { display: none; }
+  .panel { background: rgba(10, 20, 40, .92); border: 1px solid rgba(255, 255, 255, .15); border-radius: 14px;
+    padding: 28px 36px; max-width: 440px; margin: 16px; text-align: center; box-shadow: 0 10px 40px rgba(0, 0, 0, .5); }
+  .panel h1 { margin: 0 0 8px; font-size: 34px; letter-spacing: .5px; }
+  .panel p { margin: 8px 0; line-height: 1.45; color: #cfe0f5; }
+  .controls { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; text-align: left;
+    margin: 16px auto; max-width: 320px; font-size: 14px; align-items: center; }
+  kbd { background: #223a5e; border: 1px solid #3a5a86; border-radius: 4px; padding: 1px 6px;
+    font-family: inherit; font-size: 12px; white-space: nowrap; }
+  button { margin-top: 14px; background: #f2b134; color: #1a1a1a; border: 0; border-radius: 8px;
+    padding: 10px 26px; font-size: 16px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #ffc552; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="overlay"><div class="panel" id="panel"></div></div>
+<script>
+'use strict';
+
+// ===== 1. CONFIG =====
+const CONFIG = {
+  MAP_SIZE: 48,
+  DAY_LENGTH: 300, NIGHT_START: 150, FADE: 15,
+  START_LIVES: 10, MAX_HUNGER: 100, HUNGER_DRAIN: 1 / 3, SPRINT_HUNGER_MULT: 2, HUNGER_AFTER_STARVE: 50,
+  WALK_SPEED: 3.2, SPRINT_SPEED: 4.8, FOREST_SLOW: 0.65, PLAYER_RADIUS: 0.25, MONSTER_RADIUS: 0.3,
+  INVULN_TIME: 3, PORTAL_COOLDOWN: 2, PORTAL_PAIRS: 3, HIDDEN_PORTAL_RANGE: 2,
+  MONSTER_BASE: 4, MONSTER_PER_DAY: 2, MONSTER_MAX: 16,
+  MONSTER_WANDER_SPEED: 1.4, MONSTER_CHASE_SPEED: 3.5, MONSTER_SPEED_PER_DAY: 0.1, MONSTER_SPEED_MAX: 4.4,
+  MONSTER_DETECT: 6, MONSTER_DETECT_STILL: 3.5, MONSTER_GIVE_UP: 10, MONSTER_HIT_DIST: 0.55, MONSTER_SPAWN_DIST: 12,
+  BUSHES: 18, PALMS: 12, BERRY_REGROW: 60, GOLDEN_REGROW: 90, NIGHT_GROWTH: 0.25,
+  MAX_MUSHROOMS: 8, MUSHROOM_INTERVAL: 8, COCONUT_INTERVAL: [25, 45], COCONUTS_PER_PALM: 2,
+  INTERACT_RANGE: 1.0, LIGHT_RADIUS: 170, DEBUG_TIME_SCALE: 20,
+};
+const FOOD = {
+  berry: { value: 15, label: 'berries' },
+  coconut: { value: 25, label: 'coconut' },
+  mushroom: { value: 10, label: 'mushroom' },
+  golden: { value: 100, label: 'golden fruit' },
+};
+const T = { DEEP: 0, SHALLOW: 1, SAND: 2, GRASS: 3, FOREST: 4, HILL: 5, ROCK: 6, THICKET: 7, CAVE: 8 };
+const TILE_INFO = [
+  { elev: 0, color: '#1d5f9e', walk: false },                 // DEEP
+  { elev: 0, color: '#3f9fd0', walk: false },                 // SHALLOW
+  { elev: 4, color: '#e8d39a', walk: true },                  // SAND
+  { elev: 8, color: '#6cbf4f', walk: true },                  // GRASS
+  { elev: 8, color: '#559f40', walk: true, slow: true },      // FOREST
+  { elev: 16, color: '#8fae5a', walk: true },                 // HILL
+  { elev: 16, color: '#8d8a85', walk: false },                // ROCK
+  { elev: 8, color: '#3f7a32', walk: false },                 // THICKET (dense, impassable forest)
+  { elev: 16, color: '#8d8a85', walk: true, shelter: true },  // CAVE (monsters cannot enter)
+];
+const PORTAL_COLORS = ['#38e1ff', '#ffa63d', '#b57cff'];
+const SECRET_NAMES = { grove: 'Hidden Grove', cave: 'Cave Shelter', wreck: 'Shipwreck' };
+const HW = 32, HH = 16; // half tile width / height in pixels
+const TAU = Math.PI * 2;
+const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+// ===== 2. RNG / NOISE =====
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hash2(i, j) {
+  let h = Math.imul(i, 374761393) + Math.imul(j, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function makeNoise(rng, cells) {
+  const size = cells + 2, grid = [];
+  for (let i = 0; i < size * size; i++) grid.push(rng());
+  const smooth = t => t * t * (3 - 2 * t);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  return (x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y), u = smooth(x - xi), v = smooth(y - yi);
+    const g = (a, b) => grid[b * size + a];
+    return lerp(lerp(g(xi, yi), g(xi + 1, yi), u), lerp(g(xi, yi + 1), g(xi + 1, yi + 1), u), v);
+  };
+}
+function shuffle(rng, arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// ===== 3. WORLD =====
+function tileAt(world, x, y) {
+  const i = Math.floor(x), j = Math.floor(y), N = world.N;
+  if (i < 0 || j < 0 || i >= N || j >= N) return T.DEEP;
+  return world.types[j * N + i];
+}
+function isWalkable(type, forMonster) {
+  const info = TILE_INFO[type];
+  return info.walk && !(forMonster && info.shelter);
+}
+function elevAt(world, x, y) { return TILE_INFO[tileAt(world, x, y)].elev; }
+
+function floodFill(types, N, sx, sy) {
+  const reach = new Uint8Array(N * N), stack = [sy * N + sx];
+  reach[sy * N + sx] = 1;
+  while (stack.length) {
+    const k = stack.pop(), x = k % N, y = (k / N) | 0;
+    for (const [dx, dy] of DIRS4) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+      const nk = ny * N + nx;
+      if (!reach[nk] && isWalkable(types[nk])) { reach[nk] = 1; stack.push(nk); }
+    }
+  }
+  return reach;
+}
+
+function generateIsland(seed) {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const world = tryGenerate(seed + attempt * 7919);
+    if (world) return world;
+  }
+  throw new Error('Could not generate an island');
+}
+
+function tryGenerate(seed) {
+  const N = CONFIG.MAP_SIZE, rng = mulberry32(seed), c = (N - 1) / 2;
+  const n1 = makeNoise(rng, 4), n2 = makeNoise(rng, 8), n3 = makeNoise(rng, 16), fn = makeNoise(rng, 6);
+  const types = new Uint8Array(N * N);
+  const idx = (x, y) => y * N + x;
+  const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+
+  // Heightmap with radial falloff -> one round island
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const d = Math.hypot(x - c, y - c) / (N / 2);
+    const fbm = n1(x / N * 4, y / N * 4) * 0.5 + n2(x / N * 8, y / N * 8) * 0.3 + n3(x / N * 16, y / N * 16) * 0.2;
+    const h = 0.55 * (1 - Math.pow(d, 1.6) * 1.1) + 0.45 * fbm;
+    let t = h < 0.3 ? T.DEEP : h < 0.38 ? T.SHALLOW : h < 0.45 ? T.SAND : h < 0.68 ? T.GRASS : h < 0.8 ? T.HILL : T.ROCK;
+    if ((t === T.GRASS || t === T.HILL) && fn(x / N * 6, y / N * 6) > 0.58) t = T.FOREST;
+    if (x < 2 || y < 2 || x > N - 3 || y > N - 3) t = T.DEEP;
+    types[idx(x, y)] = t;
+  }
+
+  // Start: the front-most beach tile next to grass
+  let start = null, best = -1;
+  for (let y = 1; y < N - 1; y++) for (let x = 1; x < N - 1; x++) {
+    if (types[idx(x, y)] !== T.SAND) continue;
+    if (DIRS4.some(([dx, dy]) => types[idx(x + dx, y + dy)] === T.GRASS) && x + y > best) { best = x + y; start = { x, y }; }
+  }
+  if (!start) return null;
+  let reach = floodFill(types, N, start.x, start.y);
+  if (reach.reduce((a, b) => a + b, 0) < 450) return null;
+
+  // Secret 1: shipwreck at the tip of a sand spit, carved out from the farthest beach
+  let from = null, far = -1;
+  for (let k = 0; k < N * N; k++) {
+    if (!reach[k] || types[k] !== T.SAND) continue;
+    const d = dist(k % N, (k / N) | 0, c, c);
+    if (d > far) { far = d; from = { x: k % N, y: (k / N) | 0 }; }
+  }
+  const clamp = v => Math.max(3, Math.min(N - 4, v));
+  const wt = { x: clamp(Math.round(from.x + (from.x - c) / far * 5)), y: clamp(Math.round(from.y + (from.y - c) / far * 5)) };
+  for (let cx = from.x, cy = from.y; cx !== wt.x || cy !== wt.y;) {
+    if (Math.abs(wt.x - cx) >= Math.abs(wt.y - cy)) cx += Math.sign(wt.x - cx); else cy += Math.sign(wt.y - cy);
+    if (types[idx(cx, cy)] <= T.SHALLOW) types[idx(cx, cy)] = T.SAND;
+  }
+
+  // Secret 2: hidden grove, a clearing ringed by impassable thicket with a single gap
+  const cand = shuffle(rng, [...Array(N * N).keys()].filter(k => reach[k]));
+  let grove = null;
+  for (const k of cand) {
+    const x = k % N, y = (k / N) | 0;
+    if (x < 5 || y < 5 || x > N - 6 || y > N - 6) continue;
+    if (dist(x, y, start.x, start.y) < 12 || dist(x, y, wt.x, wt.y) < 9) continue;
+    let ok = true;
+    for (let dy = -3; dy <= 3 && ok; dy++) for (let dx = -3; dx <= 3; dx++) if (types[idx(x + dx, y + dy)] < T.SAND) { ok = false; break; }
+    if (!ok) continue;
+    for (const [gx, gy] of shuffle(rng, DIRS4.slice())) {
+      if (reach[idx(x + gx * 4, y + gy * 4)]) { grove = { x, y, gap: { x: x + gx * 3, y: y + gy * 3 } }; break; }
+    }
+    if (grove) break;
+  }
+  if (!grove) return null;
+  for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+    types[idx(grove.x + dx, grove.y + dy)] = Math.max(Math.abs(dx), Math.abs(dy)) === 3 ? T.THICKET : T.GRASS;
+  }
+  types[idx(grove.gap.x, grove.gap.y)] = T.GRASS;
+
+  // Secret 3: cave shelter in a rock pile, preferably in the hills
+  let cave = null, bestScore = -1;
+  for (const k of cand) {
+    const x = k % N, y = (k / N) | 0;
+    if (x < 4 || y < 4 || x > N - 5 || y > N - 5) continue;
+    if (Math.max(Math.abs(x - grove.x), Math.abs(y - grove.y)) < 6) continue;
+    if (dist(x, y, start.x, start.y) < 10 || dist(x, y, wt.x, wt.y) < 6) continue;
+    if (!reach[idx(x, y + 2)]) continue;
+    let ok = true, score = rng() * 0.5;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (types[idx(x + dx, y + dy)] < T.SAND) ok = false;
+    if (!ok) continue;
+    for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+      const t = types[idx(x + dx, y + dy)];
+      score += t === T.ROCK ? 2 : t === T.HILL ? 1 : 0;
+    }
+    if (score > bestScore) { bestScore = score; cave = { x, y }; }
+  }
+  if (!cave) return null;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) types[idx(cave.x + dx, cave.y + dy)] = T.ROCK;
+  types[idx(cave.x, cave.y)] = T.CAVE;
+  types[idx(cave.x, cave.y + 1)] = T.GRASS;
+
+  // Everything must still be reachable after carving
+  reach = floodFill(types, N, start.x, start.y);
+  if (!reach[idx(grove.x, grove.y)] || !reach[idx(cave.x, cave.y)] || !reach[idx(wt.x, wt.y)]) return null;
+
+  // Placement of portals and food sources
+  const occ = new Uint8Array(N * N);
+  const mark = (x, y, r) => {
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && ny >= 0 && nx < N && ny < N) occ[idx(nx, ny)] = 1;
+    }
+  };
+  mark(start.x, start.y, 1); mark(grove.x, grove.y, 3); mark(cave.x, cave.y, 1); mark(cave.x, cave.y + 1, 0); mark(wt.x, wt.y, 1);
+  const free = pred => [...Array(N * N).keys()].filter(k => reach[k] && !occ[k] && pred(types[k]));
+
+  const portals = [];
+  const portalTiles = free(t => t === T.SAND || t === T.GRASS || t === T.HILL || t === T.FOREST);
+  for (let p = 0; p < CONFIG.PORTAL_PAIRS; p++) {
+    const hidden = p === CONFIG.PORTAL_PAIRS - 1;
+    let placed = false;
+    for (let attempt = 0; attempt < 600 && !placed; attempt++) {
+      const minSep = attempt < 300 ? 8 : 4, minPair = attempt < 300 ? 18 : 10;
+      const a = portalTiles[Math.floor(rng() * portalTiles.length)], b = portalTiles[Math.floor(rng() * portalTiles.length)];
+      if (occ[a] || occ[b]) continue;
+      const ax = a % N + 0.5, ay = ((a / N) | 0) + 0.5, bx = b % N + 0.5, by = ((b / N) | 0) + 0.5;
+      if (dist(ax, ay, bx, by) < minPair) continue;
+      if (portals.some(q => dist(q.x, q.y, ax, ay) < minSep || dist(q.x, q.y, bx, by) < minSep)) continue;
+      const pa = { x: ax, y: ay, pair: p, hidden, discovered: !hidden };
+      const pb = { x: bx, y: by, pair: p, hidden, discovered: !hidden };
+      pa.partner = pb; pb.partner = pa;
+      portals.push(pa, pb);
+      mark(a % N, (a / N) | 0, 1); mark(b % N, (b / N) | 0, 1);
+      placed = true;
+    }
+    if (!placed) return null;
+  }
+
+  const goldTrees = [[-1, -1], [1, -1], [1, 1]].map(([dx, dy]) => ({ x: grove.x + dx + 0.5, y: grove.y + dy + 0.5, hasFruit: true, regrow: 0 }));
+  const bushes = [];
+  for (const k of shuffle(rng, free(t => t === T.GRASS))) {
+    if (bushes.length >= CONFIG.BUSHES) break;
+    if (occ[k]) continue;
+    bushes.push({ x: k % N + 0.5, y: ((k / N) | 0) + 0.5, hasBerries: true, regrow: 0 });
+    mark(k % N, (k / N) | 0, 1);
+  }
+  const palms = [];
+  for (const k of shuffle(rng, free(t => t === T.SAND))) {
+    if (palms.length >= CONFIG.PALMS) break;
+    if (occ[k]) continue;
+    palms.push({ x: k % N + 0.5, y: ((k / N) | 0) + 0.5, dropT: 5 + rng() * 20 });
+    mark(k % N, (k / N) | 0, 1);
+  }
+
+  let forestTiles = [...Array(N * N).keys()].filter(k => reach[k] && types[k] === T.FOREST);
+  if (forestTiles.length < 5) forestTiles = [...Array(N * N).keys()].filter(k => reach[k] && types[k] === T.GRASS);
+  const inGrove = k => Math.max(Math.abs(k % N - grove.x), Math.abs(((k / N) | 0) - grove.y)) <= 3;
+  const spawnTiles = [...Array(N * N).keys()].filter(k => reach[k] && !inGrove(k) && isWalkable(types[k], true) && (types[k] === T.SAND || types[k] === T.FOREST));
+
+  // Static decoration (trees, boulders, cave mouth)
+  const decor = [], sparkles = [];
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const t = types[idx(i, j)], h = hash2(i, j), h2 = hash2(j + 101, i + 37);
+    if (t === T.FOREST) decor.push({ kind: 'tree', x: i + 0.3 + h * 0.4, y: j + 0.3 + h2 * 0.4, s: 0.85 + h * 0.35 });
+    else if (t === T.THICKET) {
+      decor.push({ kind: 'tree', dark: true, x: i + 0.3, y: j + 0.35, s: 1.05 + h * 0.2 });
+      decor.push({ kind: 'tree', dark: true, x: i + 0.72, y: j + 0.7, s: 0.95 + h2 * 0.25 });
+    } else if (t === T.ROCK) decor.push({ kind: 'boulder', x: i + 0.5, y: j + 0.5, s: h });
+    else if (t === T.CAVE) decor.push({ kind: 'cave', x: i + 0.5, y: j + 0.5 });
+    else if (t <= T.SHALLOW && h < 0.1) sparkles.push({ x: i + 0.5, y: j + 0.5, ph: h * 600 });
+  }
+
+  return {
+    seed, N, types, reach, decor, sparkles, portals, goldTrees, bushes, palms, forestTiles, spawnTiles,
+    start: { x: start.x + 0.5, y: start.y + 0.5 },
+    grove, cave, wreck: { x: wt.x + 0.5, y: wt.y + 0.5 },
+  };
+}
+
+// ===== 4. ISO =====
+function toScreen(x, y, z = 0) { return { x: (x - y) * HW, y: (x + y) * HH - z }; }
+function toWorld(sx, sy) { const a = sx / HW, b = sy / HH; return { x: (a + b) / 2, y: (b - a) / 2 }; }
+
+// ===== 5. PURE GAME RULES (testable from the console via window.IslandGame) =====
+function phaseInfo(t) {
+  const { DAY_LENGTH: L, NIGHT_START: ns, FADE: f } = CONFIG;
+  const isNight = t >= ns;
+  let darkness;
+  if (t < ns - f) darkness = 0;
+  else if (t < ns) darkness = (t - (ns - f)) / f;
+  else if (t < L - f) darkness = 1;
+  else darkness = 1 - (t - (L - f)) / f;
+  return { isNight, darkness, timeLeft: isNight ? L - t : ns - t, dawn: isNight && t >= L - f };
+}
+function updateHunger(hunger, dt, sprinting) {
+  const h = hunger - dt * CONFIG.HUNGER_DRAIN * (sprinting ? CONFIG.SPRINT_HUNGER_MULT : 1);
+  if (h <= 0) return { hunger: CONFIG.HUNGER_AFTER_STARVE, starved: true };
+  return { hunger: h, starved: false };
+}
+function applyLifeLoss(lives) {
+  const left = Math.max(0, lives - 1);
+  return { lives: left, gameOver: left === 0 };
+}
+
+// ===== 6. GAME STATE & SYSTEMS =====
+let state;
+const keys = new Set();
+
+function newGame(seed = Math.floor(Math.random() * 1e9)) {
+  const world = generateIsland(seed);
+  const p = { x: world.start.x, y: world.start.y, dz: 0, hunger: CONFIG.MAX_HUNGER, lives: CONFIG.START_LIVES,
+    invuln: 0, portalCd: 0, moving: false, sprinting: false, face: 1 };
+  p.dz = elevAt(world, p.x, p.y);
+  state = {
+    mode: 'title', world, ground: buildGround(world), t: 0, day: 1, nightActive: false, player: p,
+    monsters: [], items: [], floaters: [], toasts: [], stats: { food: 0 },
+    secrets: { grove: false, cave: false, wreck: false }, wreckOpened: false,
+    flash: 0, warp: 0, timeScale: 1, mushroomT: 2, anim: 0, hover: null, interactQueued: false,
+    cam: toScreen(p.x, p.y, p.dz),
+  };
+  for (const pl of world.palms) if (Math.random() < 0.5) dropCoconut(pl);
+  for (let i = 0; i < 4; i++) spawnMushroom();
+}
+
+function toast(text) { state.toasts.push({ text, t: 0 }); if (state.toasts.length > 4) state.toasts.shift(); }
+function floater(text, x, y, color) { state.floaters.push({ text, x, y, t: 0, color }); }
+
+function standable(x, y, r, forMonster) {
+  const w = state.world;
+  return isWalkable(tileAt(w, x - r, y - r), forMonster) && isWalkable(tileAt(w, x + r, y - r), forMonster) &&
+    isWalkable(tileAt(w, x - r, y + r), forMonster) && isWalkable(tileAt(w, x + r, y + r), forMonster);
+}
+function tryMove(ent, dx, dy, r, forMonster) {
+  const res = { x: false, y: false };
+  if (dx && standable(ent.x + dx, ent.y, r, forMonster)) { ent.x += dx; res.x = true; }
+  if (dy && standable(ent.x, ent.y + dy, r, forMonster)) { ent.y += dy; res.y = true; }
+  return res;
+}
+
+function update(dt) {
+  const s = state, p = s.player;
+  s.t += dt * s.timeScale;
+  if (s.t >= CONFIG.DAY_LENGTH) { s.t -= CONFIG.DAY_LENGTH; s.day++; toast(`Day ${s.day}: the sun rises`); }
+  const ph = phaseInfo(s.t);
+  if (ph.isNight && !s.nightActive) { s.nightActive = true; spawnMonsters(); toast('Night falls... beware the monsters'); }
+  else if (!ph.isNight && s.nightActive) { s.nightActive = false; s.monsters.length = 0; }
+  if (ph.dawn) for (const m of s.monsters) m.fading = true;
+
+  updatePlayer(dt);
+  const hr = updateHunger(p.hunger, dt, p.sprinting && p.moving);
+  p.hunger = hr.hunger;
+  if (hr.starved) loseLife('starve');
+  if (s.mode !== 'play') return;
+
+  updateMonsters(dt);
+  if (s.mode !== 'play') return;
+  updateFood(dt, ph);
+  updateDiscovery();
+  s.hover = findInteractable();
+  if (s.interactQueued) { s.interactQueued = false; if (s.hover) interact(s.hover); s.hover = findInteractable(); }
+
+  p.invuln = Math.max(0, p.invuln - dt);
+  p.portalCd = Math.max(0, p.portalCd - dt);
+  s.flash = Math.max(0, s.flash - dt / 0.6);
+  s.warp = Math.max(0, s.warp - dt / 0.4);
+  for (const t of s.toasts) t.t += dt;
+  s.toasts = s.toasts.filter(t => t.t < 3);
+  for (const f of s.floaters) f.t += dt;
+  s.floaters = s.floaters.filter(f => f.t < 1.2);
+}
+
+function updatePlayer(dt) {
+  const p = state.player, w = state.world;
+  let sx = 0, sy = 0;
+  if (keys.has('KeyW') || keys.has('ArrowUp')) sy -= 1;
+  if (keys.has('KeyS') || keys.has('ArrowDown')) sy += 1;
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) sx -= 1;
+  if (keys.has('KeyD') || keys.has('ArrowRight')) sx += 1;
+  // Screen-space input -> iso world direction
+  const wx = sx + sy, wy = -sx + sy, len = Math.hypot(wx, wy);
+  p.moving = len > 0;
+  p.sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  if (p.moving) {
+    let sp = p.sprinting ? CONFIG.SPRINT_SPEED : CONFIG.WALK_SPEED;
+    if (TILE_INFO[tileAt(w, p.x, p.y)].slow) sp *= CONFIG.FOREST_SLOW;
+    tryMove(p, wx / len * sp * dt, wy / len * sp * dt, CONFIG.PLAYER_RADIUS, false);
+    if (sx) p.face = sx > 0 ? 1 : -1;
+  }
+  p.dz += (elevAt(w, p.x, p.y) - p.dz) * Math.min(1, dt * 12);
+}
+
+function playerInShelter() { const p = state.player; return !!TILE_INFO[tileAt(state.world, p.x, p.y)].shelter; }
+
+function loseLife(reason) {
+  const s = state, p = s.player, r = applyLifeLoss(p.lives);
+  p.lives = r.lives;
+  s.flash = 1;
+  if (r.gameOver) { s.mode = 'over'; showScreen('over'); return; }
+  if (reason === 'starve') toast('You are starving! -1 life');
+  else {
+    toast('A monster got you! -1 life');
+    p.x = s.world.start.x; p.y = s.world.start.y; p.dz = elevAt(s.world, p.x, p.y);
+    p.invuln = CONFIG.INVULN_TIME;
+    s.cam = toScreen(p.x, p.y, p.dz);
+    for (const m of s.monsters) m.state = 'wander';
+  }
+}
+
+function spawnMonsters() {
+  const s = state, w = s.world, p = s.player, N = w.N;
+  const count = Math.min(CONFIG.MONSTER_MAX, CONFIG.MONSTER_BASE + CONFIG.MONSTER_PER_DAY * (s.day - 1));
+  const far = w.spawnTiles.filter(k => Math.hypot(k % N + 0.5 - p.x, ((k / N) | 0) + 0.5 - p.y) >= CONFIG.MONSTER_SPAWN_DIST);
+  const pool = far.length ? far : w.spawnTiles;
+  for (let i = 0; i < count && pool.length; i++) {
+    const k = pool[Math.floor(Math.random() * pool.length)];
+    const x = k % N + 0.5, y = ((k / N) | 0) + 0.5;
+    s.monsters.push({ x, y, dz: elevAt(w, x, y), alpha: 0, fading: false, state: 'wander', ang: Math.random() * TAU,
+      wanderT: 0, stuck: 0, detour: 0, side: 1, seed: Math.random() * 10 });
+  }
+}
+
+function updateMonsters(dt) {
+  const s = state, p = s.player, w = s.world, sheltered = playerInShelter();
+  const chaseSpeed = Math.min(CONFIG.MONSTER_SPEED_MAX, CONFIG.MONSTER_CHASE_SPEED + CONFIG.MONSTER_SPEED_PER_DAY * (s.day - 1));
+  for (const m of s.monsters) {
+    m.alpha = m.fading ? Math.max(0, m.alpha - dt / 4) : Math.min(1, m.alpha + dt / 1.5);
+    const dx = p.x - m.x, dy = p.y - m.y, d = Math.hypot(dx, dy) || 0.001;
+    const detect = p.moving ? CONFIG.MONSTER_DETECT : CONFIG.MONSTER_DETECT_STILL;
+    if (m.state === 'wander') {
+      if (!m.fading && !sheltered && m.alpha > 0.5 && d < detect) m.state = 'chase';
+    } else if (sheltered || m.fading || d > CONFIG.MONSTER_GIVE_UP) m.state = 'wander';
+
+    let vx, vy, sp;
+    if (m.state === 'chase') {
+      vx = dx / d; vy = dy / d; sp = chaseSpeed;
+      if (m.detour > 0) { m.detour -= dt; [vx, vy] = [-vy * m.side + vx * 0.3, vx * m.side + vy * 0.3]; }
+    } else {
+      m.wanderT -= dt;
+      if (m.wanderT <= 0) { m.ang = Math.random() * TAU; m.wanderT = 1.5 + Math.random() * 2.5; }
+      vx = Math.cos(m.ang); vy = Math.sin(m.ang); sp = CONFIG.MONSTER_WANDER_SPEED;
+    }
+    if (TILE_INFO[tileAt(w, m.x, m.y)].slow) sp *= 0.8;
+    const moved = tryMove(m, vx * sp * dt, vy * sp * dt, CONFIG.MONSTER_RADIUS, true);
+    if (!moved.x || !moved.y) {
+      m.stuck += dt;
+      if (m.state === 'wander' && !moved.x && !moved.y) m.wanderT = 0;
+      if (m.state === 'chase' && m.stuck > 0.5 && m.detour <= 0) { m.detour = 0.8; m.side = Math.random() < 0.5 ? -1 : 1; m.stuck = 0; }
+    } else m.stuck = Math.max(0, m.stuck - dt);
+    m.dz += (elevAt(w, m.x, m.y) - m.dz) * Math.min(1, dt * 12);
+
+    if (d < CONFIG.MONSTER_HIT_DIST && !sheltered && p.invuln <= 0 && m.alpha > 0.6 && !m.fading) { loseLife('monster'); return; }
+  }
+  s.monsters = s.monsters.filter(m => !(m.fading && m.alpha <= 0));
+}
+
+function dropCoconut(pl) {
+  for (let i = 0; i < 8; i++) {
+    const a = Math.random() * TAU, r = 0.6 + Math.random() * 0.5;
+    const x = pl.x + Math.cos(a) * r, y = pl.y + Math.sin(a) * r;
+    if (standable(x, y, 0.15, true)) { state.items.push({ x, y, kind: 'coconut', source: pl }); return; }
+  }
+}
+function spawnMushroom() {
+  const w = state.world, N = w.N;
+  const k = w.forestTiles[Math.floor(Math.random() * w.forestTiles.length)];
+  if (k === undefined) return;
+  const x = k % N + 0.25 + Math.random() * 0.5, y = ((k / N) | 0) + 0.25 + Math.random() * 0.5;
+  if (state.items.some(it => Math.hypot(it.x - x, it.y - y) < 0.6)) return;
+  state.items.push({ x, y, kind: 'mushroom' });
+}
+
+function updateFood(dt, ph) {
+  const s = state, w = s.world, growth = ph.isNight ? CONFIG.NIGHT_GROWTH : 1;
+  for (const b of w.bushes) if (!b.hasBerries && (b.regrow -= dt * growth) <= 0) b.hasBerries = true;
+  for (const g of w.goldTrees) if (!g.hasFruit && (g.regrow -= dt * growth) <= 0) g.hasFruit = true;
+  if (!ph.isNight) {
+    for (const pl of w.palms) {
+      if ((pl.dropT -= dt) > 0) continue;
+      const [lo, hi] = CONFIG.COCONUT_INTERVAL;
+      pl.dropT = lo + Math.random() * (hi - lo);
+      if (s.items.filter(it => it.source === pl).length < CONFIG.COCONUTS_PER_PALM) dropCoconut(pl);
+    }
+  }
+  if ((s.mushroomT -= dt * growth) <= 0) {
+    s.mushroomT = CONFIG.MUSHROOM_INTERVAL;
+    if (s.items.filter(it => it.kind === 'mushroom').length < CONFIG.MAX_MUSHROOMS) spawnMushroom();
+  }
+}
+
+function findSecret(key) {
+  const s = state;
+  s.secrets[key] = true;
+  const n = Object.values(s.secrets).filter(Boolean).length;
+  toast(`Secret found: ${SECRET_NAMES[key]}! (${n}/3)`);
+}
+function updateDiscovery() {
+  const s = state, p = s.player, w = s.world, tx = Math.floor(p.x), ty = Math.floor(p.y);
+  if (!s.secrets.grove && Math.max(Math.abs(tx - w.grove.x), Math.abs(ty - w.grove.y)) <= 2) findSecret('grove');
+  if (!s.secrets.cave && tx === w.cave.x && ty === w.cave.y) findSecret('cave');
+  if (!s.secrets.wreck && Math.hypot(p.x - w.wreck.x, p.y - w.wreck.y) < 1.8) findSecret('wreck');
+  for (const pt of w.portals) {
+    if (!pt.discovered && Math.hypot(p.x - pt.x, p.y - pt.y) < CONFIG.HIDDEN_PORTAL_RANGE) {
+      pt.discovered = pt.partner.discovered = true;
+      toast('A hidden portal shimmers into view!');
+    }
+  }
+}
+
+function findInteractable() {
+  const s = state, p = s.player, w = s.world;
+  let best = null, bestD = Infinity;
+  const consider = (obj, type, range, label) => {
+    const d = Math.hypot(obj.x - p.x, obj.y - p.y);
+    if (d < range && d < bestD) { bestD = d; best = { obj, type, label }; }
+  };
+  for (const it of s.items) consider(it, 'item', 0.9, `Eat ${FOOD[it.kind].label}`);
+  for (const b of w.bushes) if (b.hasBerries) consider(b, 'bush', CONFIG.INTERACT_RANGE, 'Pick berries');
+  for (const g of w.goldTrees) if (g.hasFruit) consider(g, 'golden', CONFIG.INTERACT_RANGE, 'Eat golden fruit');
+  if (!s.wreckOpened) consider(w.wreck, 'wreck', 1.4, 'Search the shipwreck');
+  if (p.portalCd <= 0) for (const pt of w.portals) if (pt.discovered) consider(pt, 'portal', 0.8, 'Enter portal');
+  return best;
+}
+
+function eat(kind, x, y) {
+  const p = state.player, v = FOOD[kind].value;
+  p.hunger = Math.min(CONFIG.MAX_HUNGER, p.hunger + v);
+  state.stats.food++;
+  floater(`+${v}`, x, y, kind === 'golden' ? '#ffd84a' : '#9dff8a');
+}
+
+function interact(h) {
+  const s = state, o = h.obj;
+  switch (h.type) {
+    case 'item': eat(o.kind, o.x, o.y); s.items.splice(s.items.indexOf(o), 1); break;
+    case 'bush': eat('berry', o.x, o.y); o.hasBerries = false; o.regrow = CONFIG.BERRY_REGROW; break;
+    case 'golden': eat('golden', o.x, o.y); o.hasFruit = false; o.regrow = CONFIG.GOLDEN_REGROW; break;
+    case 'wreck': {
+      s.wreckOpened = true;
+      for (const kind of ['coconut', 'coconut', 'berry', 'berry', 'berry']) {
+        for (let i = 0; i < 10; i++) {
+          const a = Math.random() * TAU, r = 0.5 + Math.random() * 0.9;
+          const x = o.x + Math.cos(a) * r, y = o.y + Math.sin(a) * r;
+          if (standable(x, y, 0.15, true)) { s.items.push({ x, y, kind }); break; }
+        }
+      }
+      toast('You found a stash of food in the wreck!');
+      break;
+    }
+    case 'portal': teleport(o); break;
+  }
+}
+
+function teleport(pt) {
+  const s = state, p = s.player, q = pt.partner;
+  p.x = q.x; p.y = q.y; p.dz = elevAt(s.world, p.x, p.y);
+  p.portalCd = CONFIG.PORTAL_COOLDOWN;
+  s.warp = 1;
+  s.cam = toScreen(p.x, p.y, p.dz);
+  for (const m of s.monsters) m.state = 'wander';
+}
+
+// ===== 7. RENDER =====
+const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
+const dark = document.createElement('canvas'), dctx = dark.getContext('2d');
+let dpr = 1;
+
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16), f = 1 + amt;
+  const c = v => Math.max(0, Math.min(255, Math.round(v * f)));
+  return `rgb(${c(n >> 16)},${c((n >> 8) & 255)},${c(n & 255)})`;
+}
+function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+function poly(g, pts, fill) {
+  g.beginPath(); g.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+  g.closePath(); g.fillStyle = fill; g.fill();
+  g.strokeStyle = fill; g.lineWidth = 1; g.stroke(); // hides hairline seams between tiles
+}
+function rrect(g, x, y, w, h, r) {
+  g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+function ellipse(g, x, y, rx, ry, fill) { g.fillStyle = fill; g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, TAU); g.fill(); }
+function shadow(x, y, rx, ry) { ellipse(ctx, x, y, rx, ry, 'rgba(0,0,0,0.25)'); }
+
+// The ground never changes during a game, so it is pre-rendered once to an offscreen canvas.
+function buildGround(world) {
+  const { N, types } = world;
+  const c = document.createElement('canvas');
+  c.width = N * HW * 2; c.height = N * HH * 2 + 48;
+  const g = c.getContext('2d'), x0 = N * HW, y0 = 32;
+  const P = (x, y, z) => [x0 + (x - y) * HW, y0 + (x + y) * HH - z];
+  const earthy = t => t === T.GRASS || t === T.FOREST || t === T.HILL || t === T.THICKET;
+  for (let s = 0; s <= 2 * (N - 1); s++) {
+    for (let i = Math.max(0, s - N + 1); i <= Math.min(s, N - 1); i++) {
+      const j = s - i, t = types[j * N + i], info = TILE_INFO[t], z = info.elev, h = hash2(i, j);
+      const top = P(i, j, z), right = P(i + 1, j, z), bottom = P(i + 1, j + 1, z), left = P(i, j + 1, z);
+      if (z > 0) {
+        const side = earthy(t) ? '#7a5a36' : info.color;
+        poly(g, [left, bottom, P(i + 1, j + 1, 0), P(i, j + 1, 0)], shade(side, -0.2));
+        poly(g, [bottom, right, P(i + 1, j, 0), P(i + 1, j + 1, 0)], shade(side, -0.38));
+      }
+      poly(g, [top, right, bottom, left], shade(info.color, (h - 0.5) * (t === T.DEEP ? 0.06 : 0.14)));
+      const [cx, cy] = P(i + 0.5, j + 0.5, z);
+      if (t === T.SHALLOW && DIRS4.some(([dx, dy]) => (types[(j + dy) * N + i + dx] ?? 0) >= T.SAND)) {
+        poly(g, [P(i + 0.15, j + 0.15, 0), P(i + 0.85, j + 0.15, 0), P(i + 0.85, j + 0.85, 0), P(i + 0.15, j + 0.85, 0)], 'rgba(255,255,255,0.12)');
+      } else if (t === T.SAND) {
+        g.fillStyle = 'rgba(150,120,70,0.35)';
+        for (let k = 0; k < 3; k++) g.fillRect(cx + (hash2(i * 3 + k, j) - 0.5) * 36, cy + (hash2(i, j * 3 + k) - 0.5) * 16, 2, 1);
+      } else if (earthy(t) && t !== T.THICKET) {
+        g.strokeStyle = 'rgba(30,80,20,0.45)'; g.lineWidth = 1;
+        for (let k = 0; k < 3; k++) {
+          const gx = cx + (hash2(i * 5 + k, j) - 0.5) * 34, gy = cy + (hash2(i, j * 5 + k) - 0.5) * 14;
+          g.beginPath(); g.moveTo(gx, gy); g.lineTo(gx - 1, gy - 4); g.moveTo(gx + 2, gy); g.lineTo(gx + 3, gy - 3); g.stroke();
+        }
+      }
+    }
+  }
+  return { canvas: c, x0, y0 };
+}
+
+function drawConifer(x, y, s, darkTree) {
+  shadow(x, y, 12 * s, 6 * s);
+  ctx.fillStyle = '#5a3b22'; ctx.fillRect(x - 2 * s, y - 10 * s, 4 * s, 10 * s);
+  const cols = darkTree ? ['#1d4a1a', '#22551e', '#286223'] : ['#2f6e2a', '#378032', '#41923a'];
+  for (let k = 0; k < 3; k++) {
+    const by = y - 8 * s - k * 10 * s, w = (14 - k * 3.5) * s;
+    ctx.fillStyle = cols[k];
+    ctx.beginPath(); ctx.moveTo(x - w, by); ctx.lineTo(x + w, by); ctx.lineTo(x, by - 16 * s); ctx.closePath(); ctx.fill();
+  }
+}
+function drawBoulder(x, y, v, big) {
+  const s = big ? 1.4 : 1;
+  shadow(x, y, 16 * s, 7 * s);
+  ctx.fillStyle = '#76736e';
+  ctx.beginPath(); ctx.moveTo(x - 16 * s, y); ctx.lineTo(x - 13 * s, y - 12 * s); ctx.lineTo(x - 4 * s, y - (19 + v * 5) * s);
+  ctx.lineTo(x + 9 * s, y - 16 * s); ctx.lineTo(x + 16 * s, y - 5 * s); ctx.lineTo(x + 12 * s, y + 2 * s); ctx.lineTo(x - 10 * s, y + 3 * s);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#9a978f';
+  ctx.beginPath(); ctx.moveTo(x - 13 * s, y - 12 * s); ctx.lineTo(x - 4 * s, y - (19 + v * 5) * s); ctx.lineTo(x + 2 * s, y - 10 * s);
+  ctx.lineTo(x - 8 * s, y - 6 * s); ctx.closePath(); ctx.fill();
+}
+function drawDecor(o, x, y) {
+  if (o.kind === 'tree') drawConifer(x, y, o.s, o.dark);
+  else if (o.kind === 'boulder') drawBoulder(x, y, o.s, false);
+  else if (o.kind === 'cave') {
+    drawBoulder(x, y - 2, 0.6, true);
+    ctx.fillStyle = '#17110c';
+    ctx.beginPath(); ctx.ellipse(x - 2, y + 2, 9, 13, 0, Math.PI, 0); ctx.closePath(); ctx.fill();
+  }
+}
+function drawPalm(x, y, sway) {
+  shadow(x + 8, y, 15, 6);
+  const tx = x + 8 + sway, ty = y - 46;
+  ctx.strokeStyle = '#8a6136'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x - 4, y - 24, tx, ty); ctx.stroke();
+  ctx.fillStyle = '#3d9b3a';
+  for (let k = 0; k < 6; k++) {
+    ctx.save(); ctx.translate(tx, ty); ctx.rotate(k / 6 * TAU + sway * 0.05);
+    ctx.beginPath(); ctx.ellipse(11, 2, 13, 3.5, 0.35, 0, TAU); ctx.fill(); ctx.restore();
+  }
+}
+function drawBush(x, y, berries) {
+  shadow(x, y, 12, 5);
+  ellipse(ctx, x - 6, y - 7, 7, 7, '#2f7d32'); ellipse(ctx, x + 6, y - 7, 7, 7, '#2f7d32');
+  ellipse(ctx, x, y - 12, 8, 8, '#358a37'); ellipse(ctx, x - 2, y - 14, 4, 3, '#4aa64a');
+  if (berries) for (const [bx, by] of [[-6, -9], [5, -11], [0, -15], [7, -5], [-3, -5]]) ellipse(ctx, x + bx, y + by, 2.2, 2.2, '#d8243a');
+}
+function drawGoldTree(x, y, fruit, t) {
+  shadow(x, y, 13, 6);
+  ctx.fillStyle = '#6b4526'; ctx.fillRect(x - 2.5, y - 16, 5, 16);
+  ellipse(ctx, x, y - 26, 15, 13, '#2e8a3a'); ellipse(ctx, x - 4, y - 30, 7, 5, '#3fa64c');
+  if (fruit) {
+    for (const [fx, fy] of [[-7, -24], [6, -28], [1, -19], [8, -20]]) ellipse(ctx, x + fx, y + fy, 3, 3, '#ffcf33');
+    const a = (Math.sin(t * 3 + x) + 1) / 2;
+    ctx.fillStyle = `rgba(255,240,150,${a})`; ctx.fillRect(x - 10, y - 38, 2, 2); ctx.fillRect(x + 9, y - 33, 2, 2);
+  }
+}
+function drawWreck(x, y, opened) {
+  shadow(x, y, 26, 9);
+  ctx.fillStyle = '#6b4423';
+  ctx.beginPath(); ctx.moveTo(x - 26, y - 8); ctx.lineTo(x + 22, y - 14); ctx.lineTo(x + 16, y + 2); ctx.lineTo(x - 20, y + 6); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#4a2e17'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x - 23, y - 3); ctx.lineTo(x + 19, y - 8); ctx.moveTo(x - 21, y + 2); ctx.lineTo(x + 17, y - 3); ctx.stroke();
+  ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x - 2, y - 10); ctx.lineTo(x + 6, y - 46); ctx.stroke();
+  ctx.fillStyle = 'rgba(230,220,190,0.9)';
+  ctx.beginPath(); ctx.moveTo(x + 5, y - 42); ctx.lineTo(x + 20, y - 30); ctx.lineTo(x + 12, y - 29); ctx.lineTo(x + 3, y - 22); ctx.closePath(); ctx.fill();
+  if (!opened) {
+    ctx.fillStyle = '#8b5a2b'; ctx.fillRect(x - 20, y, 13, 8);
+    ctx.fillStyle = '#a36a33'; ctx.fillRect(x - 20, y - 3, 13, 4);
+    ctx.fillStyle = '#f0c040'; ctx.fillRect(x - 14.5, y - 1, 2, 4);
+  }
+}
+function drawItem(kind, x, y) {
+  if (kind === 'coconut') {
+    shadow(x, y, 6, 2.5); ellipse(ctx, x, y - 4, 5, 5, '#6b4a2b'); ellipse(ctx, x - 1.5, y - 5.5, 1.8, 1.8, '#8f6a44');
+  } else if (kind === 'mushroom') {
+    shadow(x, y, 6, 2.5);
+    ctx.fillStyle = '#f3ead8'; ctx.fillRect(x - 1.5, y - 6, 3, 6);
+    ctx.fillStyle = '#d93a2b'; ctx.beginPath(); ctx.ellipse(x, y - 6, 6, 5, 0, Math.PI, 0); ctx.closePath(); ctx.fill();
+    ellipse(ctx, x - 2.5, y - 8, 1.2, 1.2, '#fff'); ellipse(ctx, x + 2, y - 9, 1, 1, '#fff');
+  } else if (kind === 'berry') {
+    shadow(x, y, 6, 2.5);
+    for (const [bx, by] of [[-2.5, -3], [2.5, -3], [0, -6]]) ellipse(ctx, x + bx, y + by, 2.6, 2.6, '#d8243a');
+  }
+}
+function drawPortal(pt, x, y, t) {
+  const col = PORTAL_COLORS[pt.pair], cy = y - 22;
+  ellipse(ctx, x, y, 17, 7, rgba(col, 0.3));
+  const g = ctx.createRadialGradient(x, cy, 2, x, cy, 20);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)'); g.addColorStop(0.5, rgba(col, 0.6)); g.addColorStop(1, rgba(col, 0.05));
+  ellipse(ctx, x, cy, 11, 20, g);
+  ctx.strokeStyle = col; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.ellipse(x, cy, 11, 20, 0, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1.5;
+  for (let k = 0; k < 3; k++) {
+    const a = t * 3 + k * 2.1;
+    ctx.beginPath(); ctx.ellipse(x, cy, 4 + k * 2.5, 9 + k * 3.5, 0, a, a + 2); ctx.stroke();
+  }
+}
+function drawPlayer(p, x, y, t) {
+  if (p.invuln > 0 && Math.floor(t * 10) % 2) return;
+  const step = p.moving ? Math.sin(t * (p.sprinting ? 18 : 12)) : 0, bob = Math.abs(step) * 2;
+  shadow(x, y, 9, 4);
+  ctx.fillStyle = '#3b4a6b';
+  ctx.fillRect(x - 5, y - 10 + step * 2, 4, 9 - step * 2);
+  ctx.fillRect(x + 1, y - 10 - step * 2, 4, 9 + step * 2);
+  ctx.fillStyle = '#e8732c'; rrect(ctx, x - 7, y - 24 - bob, 14, 15, 4); ctx.fill();
+  ellipse(ctx, x, y - 30 - bob, 6, 6, '#f1c9a0');
+  ctx.fillStyle = '#5a3820'; ctx.beginPath(); ctx.arc(x, y - 31 - bob, 6.2, Math.PI, 0); ctx.fill();
+  ellipse(ctx, x + 2.5 * p.face, y - 29.5 - bob, 1, 1.2, '#222');
+}
+function drawMonster(m, x, y, t) {
+  ctx.globalAlpha = m.alpha;
+  shadow(x, y, 11, 5);
+  const w = Math.sin(t * 6 + m.seed) * 1.5;
+  ctx.fillStyle = '#2a1838';
+  ctx.beginPath(); ctx.moveTo(x - 11, y);
+  ctx.quadraticCurveTo(x - 13, y - 26 - w, x, y - 30 - w); ctx.quadraticCurveTo(x + 13, y - 26 - w, x + 11, y);
+  ctx.lineTo(x + 7, y - 3); ctx.lineTo(x + 3, y); ctx.lineTo(x - 1, y - 3); ctx.lineTo(x - 5, y); ctx.lineTo(x - 8, y - 3);
+  ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = 1;
+  return y - 20 - w;
+}
+function drawEyes(eyes, ox, oy) {
+  for (const e of eyes) {
+    for (const ex of [-4, 4]) {
+      ellipse(ctx, e.x + ox + ex, e.y + oy, 5, 4, `rgba(255,40,40,${0.3 * e.a})`);
+      ellipse(ctx, e.x + ox + ex, e.y + oy, 2.2, 1.8, `rgba(255,90,70,${e.a})`);
+    }
+  }
+}
+function drawSparkles(w, t, ox, oy, vw, vh) {
+  ctx.lineWidth = 1.5;
+  for (const s of w.sparkles) {
+    const sc = toScreen(s.x, s.y);
+    if (sc.x + ox < -20 || sc.x + ox > vw + 20 || sc.y + oy < -20 || sc.y + oy > vh + 20) continue;
+    const a = Math.max(0, Math.sin(t * 1.3 + s.ph)) * 0.5;
+    if (a < 0.02) continue;
+    ctx.strokeStyle = `rgba(255,255,255,${a})`;
+    ctx.beginPath(); ctx.moveTo(sc.x - 6, sc.y); ctx.quadraticCurveTo(sc.x, sc.y - 3, sc.x + 6, sc.y); ctx.stroke();
+  }
+}
+
+function drawNight(ph, ox, oy, vw, vh) {
+  if (ph.darkness <= 0) return;
+  const s = state, p = s.player, d = ph.darkness;
+  dctx.setTransform(1, 0, 0, 1, 0, 0);
+  dctx.globalCompositeOperation = 'source-over';
+  dctx.clearRect(0, 0, dark.width, dark.height);
+  dctx.fillStyle = `rgba(6,10,32,${0.9 * d})`;
+  dctx.fillRect(0, 0, dark.width, dark.height);
+  dctx.globalCompositeOperation = 'destination-out';
+  const light = (wx, wy, z, r) => {
+    const sc = toScreen(wx, wy, z), X = (sc.x + ox) * dpr, Y = (sc.y + oy) * dpr, R = r * dpr;
+    const g = dctx.createRadialGradient(X, Y, 0, X, Y, R);
+    g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(0.55, 'rgba(0,0,0,0.75)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    dctx.fillStyle = g; dctx.beginPath(); dctx.arc(X, Y, R, 0, TAU); dctx.fill();
+  };
+  light(p.x, p.y, p.dz + 16, CONFIG.LIGHT_RADIUS * (1 + Math.sin(s.anim * 8) * 0.02));
+  for (const pt of s.world.portals) if (pt.discovered) light(pt.x, pt.y, elevAt(s.world, pt.x, pt.y) + 22, 60);
+  dctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(dark, 0, 0, vw, vh);
+  const tint = d < 1 ? Math.sin(d * Math.PI) * 0.18 : 0;
+  if (tint > 0) { ctx.fillStyle = `rgba(255,110,40,${tint})`; ctx.fillRect(0, 0, vw, vh); }
+}
+
+function drawHeart(x, y, r, full) {
+  ctx.beginPath(); ctx.moveTo(x, y + r * 0.9);
+  ctx.bezierCurveTo(x - r * 1.6, y - r * 0.2, x - r * 0.7, y - r * 1.4, x, y - r * 0.45);
+  ctx.bezierCurveTo(x + r * 0.7, y - r * 1.4, x + r * 1.6, y - r * 0.2, x, y + r * 0.9);
+  ctx.fillStyle = full ? '#ff4060' : 'rgba(255,255,255,0.15)'; ctx.fill();
+}
+function fmt(sec) { const s = Math.max(0, Math.ceil(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+
+function drawHUD(ph, vw, vh) {
+  const s = state, p = s.player;
+  ctx.textBaseline = 'middle';
+  // Lives and hunger
+  ctx.fillStyle = 'rgba(0,0,0,0.4)'; rrect(ctx, 12, 12, 254, 66, 10); ctx.fill();
+  for (let i = 0; i < CONFIG.START_LIVES; i++) drawHeart(32 + i * 23.5, 32, 8.5, i < p.lives);
+  ctx.fillStyle = '#fff'; ctx.font = '600 12px system-ui, sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('Hunger', 24, 59);
+  const frac = p.hunger / CONFIG.MAX_HUNGER;
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; rrect(ctx, 76, 53, 176, 12, 6); ctx.fill();
+  ctx.fillStyle = frac > 0.5 ? '#6fd34f' : frac > 0.25 ? '#f2b134' : '#ff4a4a';
+  if (frac > 0.02) { rrect(ctx, 76, 53, 176 * frac, 12, 6); ctx.fill(); }
+
+  // Clock, day, secrets
+  const px = vw - 212;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)'; rrect(ctx, px, 12, 200, 76, 10); ctx.fill();
+  const cx = px + 36, cy = 50, r = 24;
+  ctx.fillStyle = '#f7d774'; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, -Math.PI / 2, Math.PI / 2); ctx.fill();
+  ctx.fillStyle = '#2b3570'; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, Math.PI / 2, Math.PI * 1.5); ctx.fill();
+  const a = s.t / CONFIG.DAY_LENGTH * TAU - Math.PI / 2;
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * (r - 4), cy + Math.sin(a) * (r - 4)); ctx.stroke();
+  ellipse(ctx, cx, cy, 3, 3, '#fff');
+  ctx.textAlign = 'left'; ctx.fillStyle = '#fff';
+  ctx.font = '700 16px system-ui, sans-serif'; ctx.fillText(`Day ${s.day}`, px + 72, 30);
+  ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = ph.isNight ? '#aab8ff' : '#ffe08a';
+  ctx.fillText(`${ph.isNight ? 'Night' : 'Day'}: ${fmt(ph.timeLeft)} left`, px + 72, 50);
+  ctx.fillStyle = '#cfe0f5';
+  ctx.fillText(`Secrets ${Object.values(s.secrets).filter(Boolean).length}/3 · Food ${s.stats.food}`, px + 72, 69);
+  if (s.timeScale > 1) {
+    ctx.fillStyle = '#ff6b6b'; ctx.font = '700 12px system-ui, sans-serif';
+    ctx.fillText(`DEBUG: time x${s.timeScale}`, px + 72, 100);
+  }
+
+  // Toasts
+  ctx.textAlign = 'center'; ctx.font = '600 16px system-ui, sans-serif';
+  s.toasts.forEach((t, i) => {
+    const alpha = Math.min(1, (3 - t.t) / 0.5, t.t / 0.2), w = ctx.measureText(t.text).width + 28, y = 112 + i * 36;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(10,20,40,0.85)'; rrect(ctx, vw / 2 - w / 2, y - 15, w, 30, 15); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(t.text, vw / 2, y);
+    ctx.globalAlpha = 1;
+  });
+
+  ctx.textAlign = 'left'; ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.fillText('WASD/Arrows move · Shift sprint · E interact · P pause · T debug time', 14, vh - 16);
+}
+
+function drawPrompt(ox, oy) {
+  const s = state, h = s.hover;
+  if (!h || s.mode !== 'play') return;
+  const sc = toScreen(h.obj.x, h.obj.y, elevAt(s.world, h.obj.x, h.obj.y));
+  const x = sc.x + ox, y = sc.y + oy - (h.type === 'portal' ? 60 : 48), text = `[E] ${h.label}`;
+  ctx.font = '600 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const w = ctx.measureText(text).width + 18;
+  ctx.fillStyle = 'rgba(10,20,40,0.85)'; rrect(ctx, x - w / 2, y - 12, w, 24, 8); ctx.fill();
+  ctx.fillStyle = '#ffe08a'; ctx.fillText(text, x, y);
+}
+
+function render(realDt) {
+  const s = state, w = s.world, p = s.player, vw = window.innerWidth, vh = window.innerHeight;
+  s.anim += realDt;
+  const t = s.anim, ph = phaseInfo(s.t);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = TILE_INFO[T.DEEP].color; ctx.fillRect(0, 0, vw, vh);
+
+  const target = toScreen(p.x, p.y, p.dz), k = Math.min(1, realDt * 6);
+  s.cam.x += (target.x - s.cam.x) * k; s.cam.y += (target.y - s.cam.y) * k;
+  const ox = Math.round(vw / 2 - s.cam.x), oy = Math.round(vh / 2 - s.cam.y);
+  ctx.translate(ox, oy);
+  ctx.drawImage(s.ground.canvas, -s.ground.x0, -s.ground.y0);
+  drawSparkles(w, t, ox, oy, vw, vh);
+
+  // Everything standing on the ground is drawn back-to-front by iso depth (x + y)
+  const list = [], eyes = [];
+  const add = (x, y, z, d, fn) => {
+    const sx = (x - y) * HW, sy = (x + y) * HH - z;
+    if (sx + ox > -100 && sx + ox < vw + 100 && sy + oy > -40 && sy + oy < vh + 160) list.push({ d, sx, sy, fn });
+  };
+  const ground = o => elevAt(w, o.x, o.y);
+  for (const o of w.decor) add(o.x, o.y, ground(o), o.x + o.y, (X, Y) => drawDecor(o, X, Y));
+  for (const b of w.bushes) add(b.x, b.y, ground(b), b.x + b.y, (X, Y) => drawBush(X, Y, b.hasBerries));
+  for (const pl of w.palms) add(pl.x, pl.y, ground(pl), pl.x + pl.y, (X, Y) => drawPalm(X, Y, Math.sin(t * 1.2 + pl.x) * 2));
+  for (const g of w.goldTrees) add(g.x, g.y, ground(g), g.x + g.y, (X, Y) => drawGoldTree(X, Y, g.hasFruit, t));
+  add(w.wreck.x, w.wreck.y, ground(w.wreck), w.wreck.x + w.wreck.y, (X, Y) => drawWreck(X, Y, s.wreckOpened));
+  for (const it of s.items) add(it.x, it.y, ground(it), it.x + it.y - 0.05, (X, Y) => drawItem(it.kind, X, Y));
+  for (const pt of w.portals) if (pt.discovered) add(pt.x, pt.y, ground(pt), pt.x + pt.y - 0.02, (X, Y) => drawPortal(pt, X, Y, t));
+  for (const m of s.monsters) add(m.x, m.y, m.dz, m.x + m.y, (X, Y) => eyes.push({ x: X, y: drawMonster(m, X, Y, t), a: m.alpha }));
+  add(p.x, p.y, p.dz, p.x + p.y, (X, Y) => drawPlayer(p, X, Y, t));
+  list.sort((a, b) => a.d - b.d);
+  for (const o of list) o.fn(o.sx, o.sy);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '700 14px system-ui, sans-serif';
+  for (const f of s.floaters) {
+    const sc = toScreen(f.x, f.y, elevAt(w, f.x, f.y));
+    ctx.globalAlpha = 1 - f.t / 1.2; ctx.fillStyle = f.color;
+    ctx.fillText(f.text, sc.x, sc.y - 30 - f.t * 24);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawNight(ph, ox, oy, vw, vh);
+  drawEyes(eyes, ox, oy);
+  drawPrompt(ox, oy);
+  if (s.flash > 0) { ctx.fillStyle = `rgba(255,30,30,${s.flash * 0.45})`; ctx.fillRect(0, 0, vw, vh); }
+  if (s.warp > 0) { ctx.fillStyle = `rgba(200,240,255,${s.warp * 0.6})`; ctx.fillRect(0, 0, vw, vh); }
+  if (s.mode !== 'title') drawHUD(ph, vw, vh);
+}
+
+// ===== 8. INPUT, UI & LOOP =====
+const overlay = document.getElementById('overlay'), panel = document.getElementById('panel');
+const SCREENS = {
+  title: () => `
+    <h1>Island Survival</h1>
+    <p>Gather food by day. Hide from the monsters by night. A full day lasts 5 minutes.</p>
+    <div class="controls">
+      <kbd>WASD / Arrows</kbd><span>Move</span>
+      <kbd>Shift</kbd><span>Sprint (you get hungry faster)</span>
+      <kbd>E</kbd><span>Eat, search, use a portal</span>
+      <kbd>P / Esc</kbd><span>Pause</span>
+    </div>
+    <p>You have ${CONFIG.START_LIVES} lives. Find the portals and the 3 secret places.</p>
+    <button data-action="start">Start</button>`,
+  pause: () => `<h1>Paused</h1><p>Press P or Esc to resume.</p><button data-action="resume">Resume</button>`,
+  over: () => `
+    <h1>Game Over</h1>
+    <p>You reached day ${state.day}.</p>
+    <p>Food eaten: ${state.stats.food} · Secrets found: ${Object.values(state.secrets).filter(Boolean).length}/3</p>
+    <button data-action="restart">Play again</button>`,
+};
+function showScreen(name) {
+  if (!name) { overlay.classList.add('hidden'); return; }
+  panel.innerHTML = SCREENS[name]();
+  overlay.classList.remove('hidden');
+}
+function startPlay() { keys.clear(); state.mode = 'play'; showScreen(null); toast('Day 1: find food before nightfall'); }
+function restart() { newGame(); startPlay(); }
+function pause() { state.mode = 'paused'; keys.clear(); showScreen('pause'); }
+function resume() { state.mode = 'play'; showScreen(null); }
+
+overlay.addEventListener('click', e => {
+  const action = e.target.dataset && e.target.dataset.action;
+  if (action === 'start') startPlay();
+  else if (action === 'resume') resume();
+  else if (action === 'restart') restart();
+});
+window.addEventListener('keydown', e => {
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+  if (state.mode === 'play') keys.add(e.code);
+  if (e.repeat) return;
+  const mode = state.mode;
+  if (mode === 'play') {
+    if (e.code === 'KeyE' || e.code === 'Space') state.interactQueued = true;
+    else if (e.code === 'KeyP' || e.code === 'Escape') pause();
+    else if (e.code === 'KeyT') {
+      state.timeScale = state.timeScale > 1 ? 1 : CONFIG.DEBUG_TIME_SCALE;
+      toast(state.timeScale > 1 ? `Debug: time x${CONFIG.DEBUG_TIME_SCALE}` : 'Debug: normal time');
+    }
+  } else if (mode === 'paused' && (e.code === 'KeyP' || e.code === 'Escape')) resume();
+  else if (mode === 'title' && e.code === 'Enter') startPlay();
+  else if (mode === 'over' && e.code === 'Enter') restart();
+});
+window.addEventListener('keyup', e => keys.delete(e.code));
+window.addEventListener('blur', () => keys.clear());
+
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = dark.width = Math.round(window.innerWidth * dpr);
+  canvas.height = dark.height = Math.round(window.innerHeight * dpr);
+}
+window.addEventListener('resize', resize);
+
+const STEP = 1 / 60;
+let last = performance.now(), acc = 0;
+function frame(now) {
+  const dt = Math.min(0.25, (now - last) / 1000);
+  last = now;
+  if (state.mode === 'play') {
+    acc += dt;
+    while (acc >= STEP && state.mode === 'play') { update(STEP); acc -= STEP; }
+  } else acc = 0;
+  render(dt);
+  requestAnimationFrame(frame);
+}
+
+window.IslandGame = {
+  CONFIG, phaseInfo, updateHunger, applyLifeLoss, generateIsland, toScreen, toWorld,
+  get state() { return state; }, newGame, update, render, startPlay,
+};
+
+resize();
+newGame();
+showScreen('title');
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "island-survival",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A 2.5D isometric survival game in a single HTML file",
+  "scripts": {
+    "dev": "npx serve src",
+    "test": "node tests/smoke.test.js"
+  }
+}

@@ -2,46 +2,58 @@
 
 ## Overview
 
-<!-- High-level description of the system and its purpose. -->
+Island Survival is a 2.5D (isometric) browser game. During the day the player collects food on a generated island. At night the player avoids monsters. A full day/night cycle lasts 5 minutes: 2.5 min of day and 2.5 min of night. Hunger drains over time. Starving or being caught by a monster costs one of 10 lives. The island also has 3 linked portal pairs (one hidden) and 3 secret locations.
+
+The whole game is one self-contained file, `src/index.html`, with no dependencies and no build step.
 
 ## System Diagram
 
-<!-- Diagram or ASCII sketch of the main components and how they connect. -->
+```
+keyboard ──► input (keys set) ──► update(dt) fixed 60 Hz ──► state ──► render() every frame
+                                    │                                  │
+                         clock · player · hunger         ground (pre-rendered canvas)
+                         monsters · food · discovery     depth-sorted objects
+                                                         night overlay · HUD
+```
 
 ## Components
 
-### Frontend
+The script is split into numbered sections:
 
-<!-- Framework, routing, state management, key modules. -->
-
-### Backend
-
-<!-- API layer, services, authentication. -->
-
-### Database
-
-<!-- Schema overview, migrations, key entities. -->
+1. **CONFIG**: every tunable number (day length, speeds, drain rates, counts).
+2. **RNG / noise**: seeded `mulberry32`, value noise and a `hash2` for per-tile visual variation.
+3. **World**: `generateIsland(seed)` builds a heightmap with a radial falloff, then classifies tiles and carves out the secrets (sand spit with shipwreck, grove ringed by thicket, cave in a rock pile). It flood-fills to check that everything is reachable, then places portals, bushes and palms. If a seed fails validation, it retries with another seed.
+4. **Iso**: `toScreen(x, y, z)` / `toWorld(sx, sy)` with 64×32 px tiles.
+5. **Pure rules**: `phaseInfo(t)`, `updateHunger(...)`, `applyLifeLoss(...)`. These have no side effects and can be tested from the console.
+6. **State & systems**: player movement and collision, monster AI (wander → chase → give up, with a short detour when stuck), food regrowth and spawning, secret and hidden-portal discovery, and interaction (`E`).
+7. **Render**: the ground is pre-rendered once per game to an offscreen canvas. Each frame, objects (trees, food, portals, monsters, player) are sorted by iso depth `x + y` and drawn back to front. A darkness layer with radial lights cut out is drawn on top at night, then the HUD.
+8. **Input / UI / loop**: DOM overlay screens (title, pause, game over), and `requestAnimationFrame` with a fixed-step update.
 
 ## Data Flow
 
-<!-- How a typical request moves through the system. -->
-
-## API
-
-<!-- Main endpoints or link to API reference. -->
+Input adds key codes to a set. `update(dt)` reads that set and changes `state`. `render` only reads `state`. Interaction is edge-triggered: keydown sets `interactQueued`, and the next update uses it.
 
 ## Configuration
 
-<!-- Environment variables and config files. -->
+All balance values live in `CONFIG` at the top of the script. Debug: press `T` while playing to toggle ×20 clock speed.
+
+## Testing
+
+`npm test` runs `tests/smoke.test.js`. It pulls the `<script>` out of `src/index.html`, runs it in Node with stub DOM and canvas objects, and checks the pure rules, generation across 200 seeds (everything reachable), a multi-day simulation, portals, secrets, cave safety and game over.
 
 ## Deployment
 
-<!-- Hosting, CI/CD, environments. -->
+Static file. Open `src/index.html` directly or serve the folder (e.g. `npx serve src`).
 
 ## Key Decisions
 
-<!-- Notable design choices and why they were made. -->
+- **Canvas 2D, no libraries.** Keeps the game a single readable file.
+- **Teleport-only portals.** Secret locations are on the main map: hidden grove (golden fruit), cave shelter (monsters can't enter) and shipwreck (one-time food stash).
+- **Hunger drains lives.** At 0 hunger you lose a life and hunger resets to 50. A monster hit costs a life, respawns you on the beach and gives 3 s of invulnerability.
+- **Only the clock is sped up by the debug key,** so testing the day/night cycle doesn't also starve the player.
 
 ## Open Questions
 
-<!-- Known gaps, risks, and future work. -->
+- Sound effects and music.
+- Save/high score persistence.
+- Touch controls for mobile.

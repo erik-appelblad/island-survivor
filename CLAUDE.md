@@ -10,11 +10,11 @@ This is a small demo web app used for learning agentic workflows.
 
 ## Tech Stack
 
-- **Frontend:** <!-- e.g. React, TypeScript, Vite -->
-- **Backend:** <!-- e.g. Node.js, Express -->
-- **Database:** <!-- e.g. SQLite / PostgreSQL -->
-- **Styling:** <!-- e.g. Tailwind CSS -->
-- **Testing:** <!-- e.g. Vitest, Playwright -->
+- **Frontend:** Vanilla JS + Canvas 2D in a single self-contained HTML file (`src/index.html`), no build step
+- **Backend:** None
+- **Database:** None
+- **Styling:** Inline CSS (screens only; the game is drawn on the canvas)
+- **Testing:** `tests/smoke.test.js` runs the game script in Node with a stubbed DOM; play-test in the browser too. Internals are exposed on `window.IslandGame`
 
 ## Project Structure
 
@@ -29,11 +29,8 @@ This is a small demo web app used for learning agentic workflows.
 ## Commands
 
 ```bash
-npm install         # Install dependencies
-npm run dev         # Start the dev server
-npm run build       # Production build
-npm test            # Run tests
-npm run lint        # Lint the code
+npm run dev         # Serve src/ locally (or just open src/index.html)
+npm test            # Run the headless smoke tests (Node, no dependencies)
 ```
 
 ## Code Style
