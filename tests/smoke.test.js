@@ -17,7 +17,7 @@ const fakeCtx = new Proxy({}, {
   set: (t, k, v) => { t[k] = v; return true; },
 });
 const mkEl = () => ({ getContext: () => fakeCtx, width: 0, height: 0, classList: { add: noop, remove: noop },
-  addEventListener: noop, innerHTML: '' });
+  addEventListener: noop, innerHTML: '', style: {} });
 global.document = { getElementById: mkEl, createElement: mkEl };
 global.window = global;
 global.innerWidth = 1280; global.innerHeight = 720; global.devicePixelRatio = 1;
@@ -207,6 +207,44 @@ test('gamepad: stick moves the player, A interacts once, Start pauses and resume
 test('gamepad: no controller connected is harmless', () => {
   setPads(null); G.pollGamepad();
   assert.deepEqual([G.padInput.sx, G.padInput.sy, G.padInput.sprint], [0, 0, false]);
+});
+
+// --- Touch ---
+test('touchStick: deadzone, direction and clamped magnitude', () => {
+  const R = G.CONFIG.TOUCH_STICK_RADIUS;
+  assert.deepEqual(G.touchStick(2, 2), { sx: 0, sy: 0 });
+  assert.deepEqual(G.touchStick(R, 0), { sx: 1, sy: 0 });
+  const far = G.touchStick(0, -R * 5);
+  assert.equal(far.sx, 0); assert.equal(far.sy, -1);
+  const half = G.touchStick(R / 2, R / 2); // 45 degrees, length 0.5 of the way... clamped to <= 1
+  assert.ok(Math.hypot(half.sx, half.sy) <= 1 && half.sx === half.sy && half.sx > 0);
+});
+
+test('touch: stick input moves the player and resetTouch stops it', () => {
+  setPads(null);
+  G.newGame(7); G.startPlay();
+  const p = st().player, x0 = p.x, y0 = p.y;
+  Object.assign(G.touchInput, G.touchStick(60, 0));
+  for (let i = 0; i < 20; i++) G.update(STEP);
+  assert.ok(Math.hypot(p.x - x0, p.y - y0) > 0.1, 'player moved');
+  G.resetTouch();
+  assert.deepEqual([G.touchInput.sx, G.touchInput.sy, G.touchInput.sprint], [0, 0, false]);
+  const x1 = p.x, y1 = p.y;
+  G.update(STEP);
+  assert.equal(Math.hypot(p.x - x1, p.y - y1), 0, 'player stopped');
+});
+
+test('touch: sprint flag makes the player faster', () => {
+  const run = sprint => {
+    G.newGame(7); G.startPlay();
+    const p = st().player; Object.assign(p, { x: st().world.start.x, y: st().world.start.y });
+    Object.assign(G.touchInput, { sx: 0, sy: 1, sprint });
+    const x0 = p.x, y0 = p.y;
+    for (let i = 0; i < 10; i++) G.update(STEP);
+    G.resetTouch();
+    return Math.hypot(p.x - x0, p.y - y0);
+  };
+  assert.ok(run(true) > run(false));
 });
 
 let failed = 0;

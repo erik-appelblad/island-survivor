@@ -22,10 +22,29 @@
   button { margin-top: 14px; background: #f2b134; color: #1a1a1a; border: 0; border-radius: 8px;
     padding: 10px 26px; font-size: 16px; font-weight: 600; cursor: pointer; }
   button:hover { background: #ffc552; }
+  html, body { touch-action: none; user-select: none; -webkit-user-select: none; }
+  #touch { position: fixed; inset: 0; display: none; pointer-events: none; }
+  #touch.on { display: block; }
+  #touch.hidden { display: none; }
+  #stickZone { position: absolute; left: 0; top: 0; width: 55%; height: 100%; pointer-events: auto; }
+  #stickBase, #stickKnob { position: absolute; border-radius: 50%; display: none; transform: translate(-50%, -50%); }
+  #stickBase { width: 120px; height: 120px; border: 2px solid rgba(255, 255, 255, .35); background: rgba(255, 255, 255, .08); }
+  #stickKnob { width: 52px; height: 52px; background: rgba(255, 255, 255, .45); }
+  .tbtn { position: absolute; pointer-events: auto; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-weight: 700; background: rgba(10, 20, 40, .55); border: 2px solid rgba(255, 255, 255, .4);
+    color: #fff; }
+  .tbtn.held { background: rgba(242, 177, 52, .75); color: #1a1a1a; }
+  #btnUse { right: 28px; bottom: 36px; width: 86px; height: 86px; font-size: 18px; }
+  #btnSprint { right: 130px; bottom: 28px; width: 66px; height: 66px; font-size: 13px; }
+  #btnPause { right: 14px; top: 14px; width: 44px; height: 44px; font-size: 16px; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<div id="touch">
+  <div id="stickZone"></div><div id="stickBase"></div><div id="stickKnob"></div>
+  <div class="tbtn" id="btnSprint">Sprint</div><div class="tbtn" id="btnUse">Use</div><div class="tbtn" id="btnPause">II</div>
+</div>
 <div id="overlay"><div class="panel" id="panel"></div></div>
 <script>
 'use strict';
@@ -46,6 +65,7 @@ const CONFIG = {
   INTERACT_RANGE: 1.0, LIGHT_RADIUS: 170, DEBUG_TIME_SCALE: 20,
   // Gamepad (standard mapping): button indices and stick deadzone
   PAD_DEADZONE: 0.25, PAD_INTERACT: [0], PAD_SPRINT: [1, 7], PAD_PAUSE: [9],
+  TOUCH_STICK_RADIUS: 60,
 };
 const FOOD = {
   berry: { value: 15, label: 'berries' },
@@ -331,6 +351,8 @@ function applyLifeLoss(lives) {
 let state;
 const keys = new Set();
 const padInput = { sx: 0, sy: 0, sprint: false };
+const touchInput = { sx: 0, sy: 0, sprint: false };
+let touchEnabled = false;
 
 function newGame(seed = Math.floor(Math.random() * 1e9)) {
   const p = { x: 0, y: 0, dz: 0, hunger: CONFIG.MAX_HUNGER, lives: CONFIG.START_LIVES,
@@ -413,7 +435,7 @@ function update(dt) {
 
 function updatePlayer(dt) {
   const p = state.player, w = state.world;
-  let sx = padInput.sx, sy = padInput.sy;
+  let sx = padInput.sx + touchInput.sx, sy = padInput.sy + touchInput.sy;
   if (keys.has('KeyW') || keys.has('ArrowUp')) sy -= 1;
   if (keys.has('KeyS') || keys.has('ArrowDown')) sy += 1;
   if (keys.has('KeyA') || keys.has('ArrowLeft')) sx -= 1;
@@ -421,7 +443,7 @@ function updatePlayer(dt) {
   // Screen-space input -> iso world direction
   const wx = sx + sy, wy = -sx + sy, len = Math.hypot(wx, wy);
   p.moving = len > 0;
-  p.sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight') || padInput.sprint;
+  p.sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight') || padInput.sprint || touchInput.sprint;
   if (p.moving) {
     let sp = p.sprinting ? CONFIG.SPRINT_SPEED : CONFIG.WALK_SPEED;
     if (TILE_INFO[tileAt(w, p.x, p.y)].slow) sp *= CONFIG.FOREST_SLOW;
@@ -914,7 +936,7 @@ function drawPrompt(ox, oy) {
   const s = state, h = s.hover;
   if (!h || s.mode !== 'play') return;
   const sc = toScreen(h.obj.x, h.obj.y, elevAt(s.world, h.obj.x, h.obj.y));
-  const x = sc.x + ox, y = sc.y + oy - (h.type === 'exit' ? 90 : h.type === 'portal' ? 60 : 48), text = `[E] ${h.label}`;
+  const x = sc.x + ox, y = sc.y + oy - (h.type === 'exit' ? 90 : h.type === 'portal' ? 60 : 48), text = touchEnabled ? h.label : `[E] ${h.label}`;
   ctx.font = '600 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const w = ctx.measureText(text).width + 18;
   ctx.fillStyle = 'rgba(10,20,40,0.85)'; rrect(ctx, x - w / 2, y - 12, w, 24, 8); ctx.fill();
@@ -975,6 +997,7 @@ function render(realDt) {
 
 // ===== 8. INPUT, UI & LOOP =====
 const overlay = document.getElementById('overlay'), panel = document.getElementById('panel');
+const touchEl = document.getElementById('touch');
 const SCREENS = {
   title: () => `
     <h1>Island Survival</h1>
@@ -986,6 +1009,7 @@ const SCREENS = {
       <kbd>E</kbd><span>Eat, search, use a portal</span>
       <kbd>P / Esc</kbd><span>Pause</span>
       <kbd>Gamepad</kbd><span>Stick/D-pad move · A use · B/RT sprint · Start pause</span>
+      <kbd>Touch</kbd><span>Drag left side to move · Use and Sprint buttons</span>
     </div>
     <p>You have ${CONFIG.START_LIVES} lives. Find the portals and the 3 secret places.</p>
     <button data-action="start">Start</button>`,
@@ -997,13 +1021,14 @@ const SCREENS = {
     <button data-action="restart">Play again</button>`,
 };
 function showScreen(name) {
+  touchEl.classList[name ? 'add' : 'remove']('hidden'); // on-screen controls only while playing
   if (!name) { overlay.classList.add('hidden'); return; }
   panel.innerHTML = SCREENS[name]();
   overlay.classList.remove('hidden');
 }
-function startPlay() { keys.clear(); state.mode = 'play'; showScreen(null); toast('Day 1: find food before nightfall'); }
+function startPlay() { keys.clear(); resetTouch(); state.mode = 'play'; showScreen(null); toast('Day 1: find food before nightfall'); }
 function restart() { newGame(); startPlay(); }
-function pause() { state.mode = 'paused'; keys.clear(); showScreen('pause'); }
+function pause() { state.mode = 'paused'; keys.clear(); resetTouch(); showScreen('pause'); }
 function resume() { state.mode = 'play'; showScreen(null); }
 
 overlay.addEventListener('click', e => {
@@ -1061,6 +1086,52 @@ function pollGamepad() {
   }
 }
 
+// Touch: floating virtual stick on the left, Use / Sprint / Pause buttons on the right.
+function touchStick(dx, dy) { // finger offset in px from the stick origin -> movement vector, length 0..1
+  const len = Math.hypot(dx, dy), mag = Math.min(1, len / CONFIG.TOUCH_STICK_RADIUS);
+  return mag < CONFIG.PAD_DEADZONE ? { sx: 0, sy: 0 } : { sx: dx / len * mag, sy: dy / len * mag };
+}
+function resetTouch() {
+  touchInput.sx = touchInput.sy = 0; touchInput.sprint = false;
+  stickBase.style.display = stickKnob.style.display = 'none';
+  btnSprint.classList.remove('held');
+}
+function enableTouch() { touchEnabled = true; touchEl.classList.add('on'); }
+
+const stickZone = document.getElementById('stickZone'), stickBase = document.getElementById('stickBase');
+const stickKnob = document.getElementById('stickKnob'), btnSprint = document.getElementById('btnSprint');
+const btnUse = document.getElementById('btnUse'), btnPause = document.getElementById('btnPause');
+let stickId = null, stickOx = 0, stickOy = 0;
+function place(el, x, y) { el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.display = 'block'; }
+function moveStick(e) {
+  const r = CONFIG.TOUCH_STICK_RADIUS, dx = e.clientX - stickOx, dy = e.clientY - stickOy, len = Math.hypot(dx, dy) || 1;
+  Object.assign(touchInput, touchStick(dx, dy));
+  const k = Math.min(1, r / len);
+  place(stickKnob, stickOx + dx * k, stickOy + dy * k);
+}
+stickZone.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' || stickId !== null || state.mode !== 'play') return;
+  stickId = e.pointerId; stickOx = e.clientX; stickOy = e.clientY;
+  stickZone.setPointerCapture(e.pointerId);
+  place(stickBase, stickOx, stickOy); moveStick(e);
+});
+stickZone.addEventListener('pointermove', e => { if (e.pointerId === stickId && state.mode === 'play') moveStick(e); });
+const endStick = e => { if (e.pointerId === stickId) { stickId = null; resetTouch(); } };
+stickZone.addEventListener('pointerup', endStick);
+stickZone.addEventListener('pointercancel', endStick);
+
+btnUse.addEventListener('pointerdown', () => { if (state.mode === 'play') state.interactQueued = true; });
+btnPause.addEventListener('pointerdown', () => { if (state.mode === 'play') pause(); });
+const sprintOn = e => { if (state.mode === 'play') { touchInput.sprint = true; btnSprint.classList.add('held'); e.target.setPointerCapture(e.pointerId); } };
+const sprintOff = () => { touchInput.sprint = false; btnSprint.classList.remove('held'); };
+btnSprint.addEventListener('pointerdown', sprintOn);
+btnSprint.addEventListener('pointerup', sprintOff);
+btnSprint.addEventListener('pointercancel', sprintOff);
+// Show the controls on touch-first devices, or as soon as a finger touches the page.
+if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) enableTouch();
+window.addEventListener('pointerdown', e => { if (e.pointerType === 'touch' && !touchEnabled) enableTouch(); });
+window.addEventListener('contextmenu', e => { if (touchEnabled) e.preventDefault(); });
+
 function resize() {
   dpr = Math.min(2, window.devicePixelRatio || 1);
   canvas.width = dark.width = Math.round(window.innerWidth * dpr);
@@ -1084,7 +1155,7 @@ function frame(now) {
 
 window.IslandGame = {
   CONFIG, phaseInfo, updateHunger, applyLifeLoss, generateIsland, toScreen, toWorld,
-  get state() { return state; }, newGame, update, render, startPlay, readPad, pollGamepad, padInput,
+  get state() { return state; }, newGame, update, render, startPlay, readPad, pollGamepad, padInput, touchStick, touchInput, resetTouch,
 };
 
 resize();
