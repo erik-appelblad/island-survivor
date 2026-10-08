@@ -22,10 +22,29 @@
   button { margin-top: 14px; background: #f2b134; color: #1a1a1a; border: 0; border-radius: 8px;
     padding: 10px 26px; font-size: 16px; font-weight: 600; cursor: pointer; }
   button:hover { background: #ffc552; }
+  html, body { touch-action: none; user-select: none; -webkit-user-select: none; }
+  #touch { position: fixed; inset: 0; display: none; pointer-events: none; }
+  #touch.on { display: block; }
+  #touch.hidden { display: none; }
+  #stickZone { position: absolute; left: 0; top: 0; width: 55%; height: 100%; pointer-events: auto; }
+  #stickBase, #stickKnob { position: absolute; border-radius: 50%; display: none; transform: translate(-50%, -50%); }
+  #stickBase { width: 120px; height: 120px; border: 2px solid rgba(255, 255, 255, .35); background: rgba(255, 255, 255, .08); }
+  #stickKnob { width: 52px; height: 52px; background: rgba(255, 255, 255, .45); }
+  .tbtn { position: absolute; pointer-events: auto; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-weight: 700; background: rgba(10, 20, 40, .55); border: 2px solid rgba(255, 255, 255, .4);
+    color: #fff; }
+  .tbtn.held { background: rgba(242, 177, 52, .75); color: #1a1a1a; }
+  #btnUse { right: 28px; bottom: 36px; width: 86px; height: 86px; font-size: 18px; }
+  #btnSprint { right: 130px; bottom: 28px; width: 66px; height: 66px; font-size: 13px; }
+  #btnPause { right: 14px; top: 14px; width: 44px; height: 44px; font-size: 16px; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<div id="touch">
+  <div id="stickZone"></div><div id="stickBase"></div><div id="stickKnob"></div>
+  <div class="tbtn" id="btnSprint">Sprint</div><div class="tbtn" id="btnUse">Use</div><div class="tbtn" id="btnPause">II</div>
+</div>
 <div id="overlay"><div class="panel" id="panel"></div></div>
 <script>
 'use strict';
@@ -34,22 +53,27 @@
 const CONFIG = {
   MAP_SIZE: 48,
   DAY_LENGTH: 240, NIGHT_START: 120, FADE: 15,
-  START_LIVES: 10, MAX_HUNGER: 100, HUNGER_DRAIN: 2 / 3, SPRINT_HUNGER_MULT: 2, HUNGER_AFTER_STARVE: 50,
+  START_LIVES: 5, MAX_HUNGER: 100, START_HUNGER: 20, HUNGER_DRAIN: 4 / 3, SPRINT_HUNGER_MULT: 4, SHELTER_HUNGER_MULT: 2, HUNGER_AFTER_STARVE: 20,
   EXIT_PORTAL_DIST: [2, 5], EXIT_PORTAL_SCALE: 1.7,
   WALK_SPEED: 3.2, SPRINT_SPEED: 4.8, FOREST_SLOW: 0.65, PLAYER_RADIUS: 0.25, MONSTER_RADIUS: 0.3,
-  INVULN_TIME: 3, PORTAL_COOLDOWN: 2, PORTAL_PAIRS: 3, HIDDEN_PORTAL_RANGE: 2,
+  INVULN_TIME: 3, PORTAL_COOLDOWN: 2, PORTAL_PAIRS: 3, HIDDEN_PORTAL_RANGE: 2, HIDDEN_PORTAL_MIN_START: 10,
   MONSTER_BASE: 4, MONSTER_PER_DAY: 2, MONSTER_MAX: 16,
   MONSTER_WANDER_SPEED: 1.4, MONSTER_CHASE_SPEED: 3.5, MONSTER_SPEED_PER_DAY: 0.1, MONSTER_SPEED_MAX: 4.4,
   MONSTER_DETECT: 6, MONSTER_DETECT_STILL: 3.5, MONSTER_GIVE_UP: 10, MONSTER_HIT_DIST: 0.55, MONSTER_SPAWN_DIST: 12,
-  BUSHES: 18, PALMS: 12, BERRY_REGROW: 60, GOLDEN_REGROW: 90, NIGHT_GROWTH: 0.25,
+  BUSHES: 18, PALMS: 12, BERRY_REGROW: 60, GOLDEN_REGROW: 120, NIGHT_GROWTH: 0.25,
   MAX_MUSHROOMS: 8, MUSHROOM_INTERVAL: 8, COCONUT_INTERVAL: [25, 45], COCONUTS_PER_PALM: 2,
   INTERACT_RANGE: 1.0, LIGHT_RADIUS: 170, DEBUG_TIME_SCALE: 20,
+  // Gamepad (standard mapping): button indices and stick deadzone
+  PAD_DEADZONE: 0.25, PAD_INTERACT: [0], PAD_SPRINT: [1, 7], PAD_PAUSE: [9],
+  TOUCH_STICK_RADIUS: 60,
+  // Music: master volume, volume factor while paused / game over, scheduler lookahead (s)
+  MUSIC_VOLUME: 0.3, MUSIC_DUCK: 0.4, MUSIC_LOOKAHEAD: 0.3, SFX_VOLUME: 0.5,
 };
 const FOOD = {
   berry: { value: 15, label: 'berries' },
   coconut: { value: 25, label: 'coconut' },
   mushroom: { value: 10, label: 'mushroom' },
-  golden: { value: 100, label: 'golden fruit' },
+  golden: { value: 50, label: 'golden fruit' },
 };
 const T = { DEEP: 0, SHALLOW: 1, SAND: 2, GRASS: 3, FOREST: 4, HILL: 5, ROCK: 6, THICKET: 7, CAVE: 8 };
 const TILE_INFO = [
@@ -248,6 +272,8 @@ function tryGenerate(seed) {
       if (occ[a] || occ[b]) continue;
       const ax = a % N + 0.5, ay = ((a / N) | 0) + 0.5, bx = b % N + 0.5, by = ((b / N) | 0) + 0.5;
       if (dist(ax, ay, bx, by) < minPair) continue;
+      // keep the hidden portal out of reach of the spawn point, so it isn't revealed within seconds
+      if (hidden && (dist(ax, ay, start.x + 0.5, start.y + 0.5) < CONFIG.HIDDEN_PORTAL_MIN_START || dist(bx, by, start.x + 0.5, start.y + 0.5) < CONFIG.HIDDEN_PORTAL_MIN_START)) continue;
       if (portals.some(q => dist(q.x, q.y, ax, ay) < minSep || dist(q.x, q.y, bx, by) < minSep)) continue;
       const pa = { x: ax, y: ay, pair: p, hidden, discovered: !hidden };
       const pb = { x: bx, y: by, pair: p, hidden, discovered: !hidden };
@@ -315,8 +341,9 @@ function phaseInfo(t) {
   else darkness = 1 - (t - (L - f)) / f;
   return { isNight, darkness, timeLeft: isNight ? L - t : ns - t, dawn: isNight && t >= L - f };
 }
-function updateHunger(hunger, dt, sprinting) {
-  const h = hunger - dt * CONFIG.HUNGER_DRAIN * (sprinting ? CONFIG.SPRINT_HUNGER_MULT : 1);
+function updateHunger(hunger, dt, sprinting, sheltered = false) { // hiding in the cave drains faster, to push the player out
+  const mult = (sprinting ? CONFIG.SPRINT_HUNGER_MULT : 1) * (sheltered ? CONFIG.SHELTER_HUNGER_MULT : 1);
+  const h = hunger - dt * CONFIG.HUNGER_DRAIN * mult;
   if (h <= 0) return { hunger: CONFIG.HUNGER_AFTER_STARVE, starved: true };
   return { hunger: h, starved: false };
 }
@@ -328,9 +355,12 @@ function applyLifeLoss(lives) {
 // ===== 6. GAME STATE & SYSTEMS =====
 let state;
 const keys = new Set();
+const padInput = { sx: 0, sy: 0, sprint: false };
+const touchInput = { sx: 0, sy: 0, sprint: false };
+let touchEnabled = false;
 
 function newGame(seed = Math.floor(Math.random() * 1e9)) {
-  const p = { x: 0, y: 0, dz: 0, hunger: CONFIG.MAX_HUNGER, lives: CONFIG.START_LIVES,
+  const p = { x: 0, y: 0, dz: 0, hunger: CONFIG.START_HUNGER, lives: CONFIG.START_LIVES,
     invuln: 0, portalCd: 0, moving: false, sprinting: false, face: 1 };
   state = {
     mode: 'title', t: 0, day: 1, island: 1, nightActive: false, player: p,
@@ -386,7 +416,7 @@ function update(dt) {
   if (ph.dawn) for (const m of s.monsters) m.fading = true;
 
   updatePlayer(dt);
-  const hr = updateHunger(p.hunger, dt, p.sprinting && p.moving);
+  const hr = updateHunger(p.hunger, dt, p.sprinting && p.moving, playerInShelter());
   p.hunger = hr.hunger;
   if (hr.starved) loseLife('starve');
   if (s.mode !== 'play') return;
@@ -410,7 +440,7 @@ function update(dt) {
 
 function updatePlayer(dt) {
   const p = state.player, w = state.world;
-  let sx = 0, sy = 0;
+  let sx = padInput.sx + touchInput.sx, sy = padInput.sy + touchInput.sy;
   if (keys.has('KeyW') || keys.has('ArrowUp')) sy -= 1;
   if (keys.has('KeyS') || keys.has('ArrowDown')) sy += 1;
   if (keys.has('KeyA') || keys.has('ArrowLeft')) sx -= 1;
@@ -418,7 +448,7 @@ function updatePlayer(dt) {
   // Screen-space input -> iso world direction
   const wx = sx + sy, wy = -sx + sy, len = Math.hypot(wx, wy);
   p.moving = len > 0;
-  p.sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  p.sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight') || padInput.sprint || touchInput.sprint;
   if (p.moving) {
     let sp = p.sprinting ? CONFIG.SPRINT_SPEED : CONFIG.WALK_SPEED;
     if (TILE_INFO[tileAt(w, p.x, p.y)].slow) sp *= CONFIG.FOREST_SLOW;
@@ -434,6 +464,7 @@ function loseLife(reason) {
   const s = state, p = s.player, r = applyLifeLoss(p.lives);
   p.lives = r.lives;
   s.flash = 1;
+  sfx(reason === 'starve' ? 'starve' : 'hit');
   if (r.gameOver) { s.mode = 'over'; showScreen('over'); return; }
   if (reason === 'starve') toast('You are starving! -1 life');
   else {
@@ -441,15 +472,29 @@ function loseLife(reason) {
     p.x = s.world.start.x; p.y = s.world.start.y; p.dz = elevAt(s.world, p.x, p.y);
     p.invuln = CONFIG.INVULN_TIME;
     s.cam = toScreen(p.x, p.y, p.dz);
-    for (const m of s.monsters) m.state = 'wander';
+    // Monsters near the respawn point move away, so the player isn't spotted straight away.
+    const pool = farSpawnTiles(p.x, p.y), N = s.world.N;
+    for (const m of s.monsters) {
+      m.state = 'wander';
+      if (!pool.length || Math.hypot(m.x - p.x, m.y - p.y) >= CONFIG.MONSTER_SPAWN_DIST) continue;
+      const k = pool[Math.floor(Math.random() * pool.length)];
+      m.x = k % N + 0.5; m.y = ((k / N) | 0) + 0.5; m.dz = elevAt(s.world, m.x, m.y);
+      m.alpha = 0; m.stuck = 0; m.detour = 0; // fades back in at its new spot
+    }
   }
+}
+
+// Monster spawn tiles at least MONSTER_SPAWN_DIST from (x, y), or all of them if none are that far.
+function farSpawnTiles(x, y) {
+  const w = state.world, N = w.N;
+  const far = w.spawnTiles.filter(k => Math.hypot(k % N + 0.5 - x, ((k / N) | 0) + 0.5 - y) >= CONFIG.MONSTER_SPAWN_DIST);
+  return far.length ? far : w.spawnTiles;
 }
 
 function spawnMonsters() {
   const s = state, w = s.world, p = s.player, N = w.N;
   const count = Math.min(CONFIG.MONSTER_MAX, CONFIG.MONSTER_BASE + CONFIG.MONSTER_PER_DAY * (s.day - 1));
-  const far = w.spawnTiles.filter(k => Math.hypot(k % N + 0.5 - p.x, ((k / N) | 0) + 0.5 - p.y) >= CONFIG.MONSTER_SPAWN_DIST);
-  const pool = far.length ? far : w.spawnTiles;
+  const pool = farSpawnTiles(p.x, p.y);
   for (let i = 0; i < count && pool.length; i++) {
     const k = pool[Math.floor(Math.random() * pool.length)];
     const x = k % N + 0.5, y = ((k / N) | 0) + 0.5;
@@ -531,6 +576,7 @@ function findSecret(key) {
   s.secrets[key] = true;
   const n = Object.values(s.secrets).filter(Boolean).length;
   toast(`Secret found: ${SECRET_NAMES[key]}! (${n}/3)`);
+  sfx('secret');
 }
 function updateDiscovery() {
   const s = state, p = s.player, w = s.world, tx = Math.floor(p.x), ty = Math.floor(p.y);
@@ -565,6 +611,7 @@ function eat(kind, x, y) {
   const p = state.player, v = FOOD[kind].value;
   p.hunger = Math.min(CONFIG.MAX_HUNGER, p.hunger + v);
   state.stats.food++;
+  sfx(kind === 'golden' ? 'golden' : 'eat');
   floater(`+${v}`, x, y, kind === 'golden' ? '#ffd84a' : '#9dff8a');
 }
 
@@ -603,11 +650,13 @@ function spawnExitPortal() {
   }
   s.exitPortal = cands.length ? cands[Math.floor(Math.random() * cands.length)] : { x: w.start.x, y: w.start.y };
   toast('A white portal has opened! It leads to a new island');
+  sfx('reveal');
 }
 
 function travelToNewIsland() {
   const s = state;
   s.island++;
+  sfx('exit');
   loadIsland(generateIsland(Math.floor(Math.random() * 1e9)));
   s.warp = 1;
   toast(`Island ${s.island}: a new shore to explore`);
@@ -617,6 +666,7 @@ function teleport(pt) {
   const s = state, p = s.player, q = pt.partner;
   p.x = q.x; p.y = q.y; p.dz = elevAt(s.world, p.x, p.y);
   p.portalCd = CONFIG.PORTAL_COOLDOWN;
+  sfx('portal');
   s.warp = 1;
   s.cam = toScreen(p.x, p.y, p.dz);
   for (const m of s.monsters) m.state = 'wander';
@@ -911,7 +961,7 @@ function drawPrompt(ox, oy) {
   const s = state, h = s.hover;
   if (!h || s.mode !== 'play') return;
   const sc = toScreen(h.obj.x, h.obj.y, elevAt(s.world, h.obj.x, h.obj.y));
-  const x = sc.x + ox, y = sc.y + oy - (h.type === 'exit' ? 90 : h.type === 'portal' ? 60 : 48), text = `[E] ${h.label}`;
+  const x = sc.x + ox, y = sc.y + oy - (h.type === 'exit' ? 90 : h.type === 'portal' ? 60 : 48), text = touchEnabled ? h.label : `[E] ${h.label}`;
   ctx.font = '600 13px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const w = ctx.measureText(text).width + 18;
   ctx.fillStyle = 'rgba(10,20,40,0.85)'; rrect(ctx, x - w / 2, y - 12, w, 24, 8); ctx.fill();
@@ -970,8 +1020,174 @@ function render(realDt) {
   if (s.mode !== 'title') drawHUD(ph, vw, vh);
 }
 
+// ===== 7b. MUSIC (procedural Web Audio, no assets) =====
+// Three always-running generative layers. Day and night are crossfaded by the darkness value from phaseInfo;
+// the chase layer (heartbeat and stabs) fades in with the tension of monsters pursuing the player.
+function musicMix(darkness) { // equal-power crossfade, so the loudness stays steady through dusk and dawn
+  const a = Math.min(1, Math.max(0, darkness)) * Math.PI / 2;
+  return { day: Math.cos(a), night: Math.sin(a) };
+}
+function chaseIntensity(monsters, p) { // 0 = nothing chasing, 0.4..1 = chased, higher the closer the nearest monster
+  let best = 0;
+  for (const m of monsters) {
+    if (m.state !== 'chase' || m.fading) continue;
+    const close = 1 - Math.min(1, Math.max(0, (Math.hypot(m.x - p.x, m.y - p.y) - 1) / CONFIG.MONSTER_GIVE_UP));
+    best = Math.max(best, 0.4 + 0.6 * close);
+  }
+  return best;
+}
+const midiHz = n => 440 * Math.pow(2, (n - 69) / 12);
+const CHORD_STEPS = 16; // steps (eighth notes) per chord
+const LAYERS = {
+  day: { // C major: warm triangle pad, bouncy pentatonic plucks
+    bpm: 84, chords: [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62]], scale: [72, 74, 76, 79, 81, 84],
+    chance: 0.55, padType: 'triangle', leadType: 'triangle', leadLen: 0.7, padVol: 0.05, leadVol: 0.12, bassVol: 0.14, seed: 11,
+  },
+  night: { // dissonant: diminished chords and semitone clusters, a detuned pad that beats, a creeping drone, rare shrieks
+    bpm: 44, chords: [[57, 60, 63], [57, 58, 64], [54, 60, 63], [56, 57, 63]], scale: [69, 70, 75, 76, 81],
+    chance: 0.14, padType: 'sine', leadType: 'sine', leadLen: 3, padVol: 0.07, leadVol: 0.08, bassVol: 0.2,
+    detune: 22, stingChance: 0.025, seed: 29,
+  },
+  chase: { bpm: 132, seed: 47 }, // heartbeat plus tritone stabs; see scheduleChase
+};
+const music = { ctx: null, master: null, muted: false, layers: {}, tension: 0, lastT: 0 };
+try { music.muted = localStorage.getItem('island.muted') === '1'; } catch (e) { /* storage unavailable */ }
+
+// One oscillator with an attack/hold/release envelope; o.detune in cents, o.glide = pitch it slides to over the note
+function tone(layer, freq, t, o) {
+  const c = music.ctx, osc = c.createOscillator(), g = c.createGain();
+  const attack = o.attack || 0, hold = o.hold || 0, end = t + attack + hold + o.release;
+  osc.type = o.type; osc.frequency.value = freq;
+  if (o.detune) osc.detune.value = o.detune;
+  if (o.glide) osc.frequency.exponentialRampToValueAtTime(o.glide, end);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(o.vol, t + attack);
+  g.gain.setValueAtTime(o.vol, t + attack + hold);
+  g.gain.linearRampToValueAtTime(0, end);
+  osc.connect(g); g.connect(layer.bus);
+  osc.start(t); osc.stop(end + 0.05);
+}
+function scheduleChase(layer, step, t) {
+  if (step % 4 === 0) tone(layer, 95, t, { type: 'sine', vol: 0.55, attack: 0.005, release: 0.2, glide: 38 }); // lub
+  if (step % 4 === 1) tone(layer, 80, t, { type: 'sine', vol: 0.32, attack: 0.005, release: 0.18, glide: 38 }); // dub
+  if (step % 2 === 0) tone(layer, midiHz(step % 4 === 0 ? 40 : 46), t, { type: 'sawtooth', vol: 0.09, attack: 0.005, release: 0.12 }); // tritone stabs
+  const r = step % 16; // rising screech in the last bar of each phrase
+  if (r >= 12) tone(layer, midiHz(64 + (r - 12) * 1.5), t, { type: 'sawtooth', vol: 0.05, attack: 0.01, release: 0.1 });
+}
+function scheduleStep(name, step, t) {
+  const L = LAYERS[name], layer = music.layers[name], sd = 30 / L.bpm;
+  if (name === 'chase') { scheduleChase(layer, step, t); return; }
+  const chord = L.chords[Math.floor(step / CHORD_STEPS) % L.chords.length];
+  if (step % CHORD_STEPS === 0) for (const n of chord) {
+    const pad = { type: L.padType, vol: L.padVol, attack: sd * 4, hold: sd * 8, release: sd * 6 };
+    tone(layer, midiHz(n), t, pad);
+    if (L.detune) tone(layer, midiHz(n), t, { ...pad, detune: L.detune }); // slow beating against the first
+  }
+  if (step % 8 === 0) tone(layer, midiHz(chord[0] - 24), t, { type: 'sine', vol: L.bassVol, attack: sd * 2, hold: sd * 2, release: sd * 6 });
+  if (layer.rng() < L.chance) {
+    const n = L.scale[Math.floor(layer.rng() * L.scale.length)];
+    tone(layer, midiHz(n), t, { type: L.leadType, vol: L.leadVol, attack: 0.02, release: L.leadLen });
+  }
+  if (L.stingChance && layer.rng() < L.stingChance) { // a thin falling shriek
+    tone(layer, midiHz(88), t, { type: 'sawtooth', vol: 0.025, attack: 0.3, hold: 0.3, release: 1.6, glide: midiHz(76) });
+  }
+}
+function musicStart() { // call from a user gesture: browsers block audio until then
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!music.ctx) {
+    try {
+      const c = music.ctx = new AC();
+      music.master = c.createGain(); music.master.connect(c.destination);
+      const sfxBus = c.createGain(); sfxBus.gain.value = CONFIG.SFX_VOLUME; sfxBus.connect(c.destination);
+      music.sfx = { bus: sfxBus };
+      for (const name in LAYERS) {
+        const bus = c.createGain(); bus.gain.value = 0;
+        let out = music.master;
+        if (name === 'night') { // slow tremolo (unsteady volume) and an echo send
+          const trem = c.createGain(), lfo = c.createOscillator(), depth = c.createGain();
+          trem.gain.value = 0.75; lfo.frequency.value = 0.13; depth.gain.value = 0.25;
+          lfo.connect(depth); depth.connect(trem.gain); lfo.start(); trem.connect(music.master); out = trem;
+          const delay = c.createDelay(2), fb = c.createGain(), send = c.createGain();
+          delay.delayTime.value = 0.7; fb.gain.value = 0.5; send.gain.value = 0.4;
+          bus.connect(send); send.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(music.master);
+        } else if (name === 'chase') { // keep the saw stabs dark
+          const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1200;
+          lp.connect(music.master); out = lp;
+        }
+        bus.connect(out);
+        music.layers[name] = { bus, step: 0, next: c.currentTime + 0.1, rng: mulberry32(LAYERS[name].seed) };
+      }
+    } catch (e) { music.ctx = null; return; } // no audio is fine, the game stays silent
+  }
+  if (music.ctx.state === 'suspended') music.ctx.resume();
+}
+function musicUpdate(mode, darkness, chase = 0) { // every frame: set volumes, then schedule notes a little ahead
+  const c = music.ctx;
+  if (!c) return;
+  const now = c.currentTime, dt = Math.min(0.25, Math.max(0, now - music.lastT));
+  music.lastT = now;
+  music.tension += (chase - music.tension) * Math.min(1, (chase > music.tension ? 2 : 0.25) * dt); // up fast, down slowly
+  const mix = musicMix(darkness);
+  mix.night *= 1 - 0.4 * music.tension; // the night pad steps back a little during a chase
+  mix.chase = music.tension;
+  const vol = music.muted ? 0 : CONFIG.MUSIC_VOLUME * (mode === 'play' ? 1 : CONFIG.MUSIC_DUCK);
+  music.master.gain.setTargetAtTime(vol, now, 0.25);
+  for (const name in LAYERS) {
+    const layer = music.layers[name], sd = 30 / LAYERS[name].bpm;
+    layer.bus.gain.setTargetAtTime(mix[name], now, 0.1);
+    if (layer.next < now) layer.next = now; // e.g. after the tab was in the background
+    while (layer.next < now + CONFIG.MUSIC_LOOKAHEAD) {
+      if (mix[name] > 0.01 && !music.muted) scheduleStep(name, layer.step, layer.next);
+      layer.next += sd; layer.step++;
+    }
+  }
+}
+// Sound effects: rows are [delay s, oscillator type, Hz, volume, release s, glide-to Hz]; 'noise' is a white-noise burst.
+const SFX = {
+  eat: [[0, 'triangle', 420, 0.3, 0.09, 840], [0.07, 'triangle', 630, 0.25, 0.12, 1050]],
+  golden: [[0, 'triangle', 420, 0.3, 0.09, 840], [0.07, 'sine', 1047, 0.2, 0.5], [0.14, 'sine', 1319, 0.2, 0.5],
+    [0.21, 'sine', 1568, 0.2, 0.5], [0.28, 'sine', 2093, 0.2, 0.7]],
+  portal: [[0, 'sine', 200, 0.3, 0.45, 1300], [0.04, 'sine', 303, 0.15, 0.45, 1950], [0.3, 'triangle', 1500, 0.1, 0.3, 500]],
+  hit: [[0, 'noise', 0, 0.3, 0.2], [0, 'sawtooth', 150, 0.35, 0.35, 45], [0, 'sine', 110, 0.6, 0.3, 35]],
+  secret: [[0, 'sine', 659, 0.2, 1.2], [0.12, 'sine', 831, 0.2, 1.2], [0.24, 'sine', 988, 0.2, 1.2], [0.36, 'sine', 1319, 0.2, 1.6]],
+  starve: [[0, 'sawtooth', 110, 0.25, 0.4, 70], [0.25, 'sawtooth', 100, 0.25, 0.45, 55], [0.6, 'sine', 220, 0.3, 0.7, 140]],
+  reveal: [[0, 'sine', 400, 0.2, 1.2, 1600], [0.3, 'triangle', 2000, 0.1, 0.8, 3000], [0.5, 'sine', 1568, 0.12, 1]],
+  exit: [[0, 'sine', 130, 0.35, 1.3, 1800], [0.55, 'sine', 1047, 0.2, 1.6], [0.6, 'sine', 1319, 0.2, 1.6],
+    [0.65, 'sine', 1568, 0.2, 1.6], [0.7, 'sine', 2093, 0.2, 1.8]],
+};
+function noiseBurst(t, vol, release) { // release must be under 1 s (the length of the shared noise buffer)
+  const c = music.ctx, src = c.createBufferSource(), g = c.createGain();
+  if (!music.noise) {
+    const buf = c.createBuffer(1, 22050, 22050), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    music.noise = buf;
+  }
+  src.buffer = music.noise;
+  g.gain.setValueAtTime(vol, t); g.gain.linearRampToValueAtTime(0, t + release);
+  src.connect(g); g.connect(music.sfx.bus); src.start(t); src.stop(t + release + 0.05);
+}
+function sfx(name) { // silent until audio has started, and when muted
+  const c = music.ctx, rows = SFX[name];
+  if (!c || music.muted || !rows) return;
+  const t0 = c.currentTime + 0.01;
+  for (const [delay, type, freq, vol, release, glide] of rows) {
+    if (type === 'noise') noiseBurst(t0 + delay, vol, release);
+    else tone(music.sfx, freq, t0 + delay, { type, vol, attack: 0.01, release, glide });
+  }
+}
+function toggleMute() {
+  music.muted = !music.muted;
+  try { localStorage.setItem('island.muted', music.muted ? '1' : '0'); } catch (e) { /* ignore */ }
+  return music.muted;
+}
+['keydown', 'pointerdown'].forEach(ev => window.addEventListener(ev, () => { // retry if autoplay was blocked at start
+  if (music.ctx && music.ctx.state === 'suspended') music.ctx.resume();
+}));
+
 // ===== 8. INPUT, UI & LOOP =====
 const overlay = document.getElementById('overlay'), panel = document.getElementById('panel');
+const touchEl = document.getElementById('touch');
 const SCREENS = {
   title: () => `
     <h1>Island Survival</h1>
@@ -982,6 +1198,9 @@ const SCREENS = {
       <kbd>Shift</kbd><span>Sprint (you get hungry faster)</span>
       <kbd>E</kbd><span>Eat, search, use a portal</span>
       <kbd>P / Esc</kbd><span>Pause</span>
+      <kbd>M</kbd><span>Mute / unmute sound</span>
+      <kbd>Gamepad</kbd><span>Stick/D-pad move · A use · B/RT sprint · Start pause</span>
+      <kbd>Touch</kbd><span>Drag left side to move · Use and Sprint buttons</span>
     </div>
     <p>You have ${CONFIG.START_LIVES} lives. Find the portals and the 3 secret places.</p>
     <button data-action="start">Start</button>`,
@@ -993,13 +1212,14 @@ const SCREENS = {
     <button data-action="restart">Play again</button>`,
 };
 function showScreen(name) {
+  touchEl.classList[name ? 'add' : 'remove']('hidden'); // on-screen controls only while playing
   if (!name) { overlay.classList.add('hidden'); return; }
   panel.innerHTML = SCREENS[name]();
   overlay.classList.remove('hidden');
 }
-function startPlay() { keys.clear(); state.mode = 'play'; showScreen(null); toast('Day 1: find food before nightfall'); }
+function startPlay() { keys.clear(); resetTouch(); musicStart(); state.mode = 'play'; showScreen(null); toast('Day 1: find food before nightfall'); }
 function restart() { newGame(); startPlay(); }
-function pause() { state.mode = 'paused'; keys.clear(); showScreen('pause'); }
+function pause() { state.mode = 'paused'; keys.clear(); resetTouch(); showScreen('pause'); }
 function resume() { state.mode = 'play'; showScreen(null); }
 
 overlay.addEventListener('click', e => {
@@ -1013,6 +1233,7 @@ window.addEventListener('keydown', e => {
   if (state.mode === 'play') keys.add(e.code);
   if (e.repeat) return;
   const mode = state.mode;
+  if (e.code === 'KeyM') { const m = toggleMute(); if (mode === 'play') toast(m ? 'Sound off' : 'Sound on'); }
   if (mode === 'play') {
     if (e.code === 'KeyE' || e.code === 'Space') state.interactQueued = true;
     else if (e.code === 'KeyP' || e.code === 'Escape') pause();
@@ -1027,6 +1248,82 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
 
+// Gamepad: polled once per frame (the API has no button events). Standard mapping assumed.
+const padPrev = { interact: false, pause: false };
+function pressed(pad, list) { return list.some(i => pad.buttons[i] && pad.buttons[i].pressed); }
+function readPad(pad) {
+  const dz = CONFIG.PAD_DEADZONE, b = i => (pad.buttons[i] && pad.buttons[i].pressed ? 1 : 0);
+  let x = pad.axes[0] || 0, y = pad.axes[1] || 0;
+  if (Math.hypot(x, y) < dz) x = y = 0;
+  x += b(15) - b(14); y += b(13) - b(12); // D-pad right/left, down/up
+  return { sx: x, sy: y, sprint: pressed(pad, CONFIG.PAD_SPRINT),
+    interact: pressed(pad, CONFIG.PAD_INTERACT), pause: pressed(pad, CONFIG.PAD_PAUSE) };
+}
+function pollGamepad() {
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+  const pad = pads.find(p => p.connected !== false);
+  const r = pad ? readPad(pad) : { sx: 0, sy: 0, sprint: false, interact: false, pause: false };
+  const mode = state.mode;
+  const pInteract = r.interact && !padPrev.interact, pPause = r.pause && !padPrev.pause;
+  padPrev.interact = r.interact; padPrev.pause = r.pause;
+  const play = mode === 'play';
+  padInput.sx = play ? r.sx : 0; padInput.sy = play ? r.sy : 0; padInput.sprint = play && r.sprint;
+  if (play) {
+    if (pInteract) state.interactQueued = true;
+    else if (pPause) pause();
+  } else if (pPause || pInteract) {
+    if (mode === 'paused' && pPause) resume();
+    else if (mode === 'title') startPlay();
+    else if (mode === 'over' && pPause) restart(); // not A, so mashing it can't skip the game-over screen
+  }
+}
+
+// Touch: floating virtual stick on the left, Use / Sprint / Pause buttons on the right.
+function touchStick(dx, dy) { // finger offset in px from the stick origin -> movement vector, length 0..1
+  const len = Math.hypot(dx, dy), mag = Math.min(1, len / CONFIG.TOUCH_STICK_RADIUS);
+  return mag < CONFIG.PAD_DEADZONE ? { sx: 0, sy: 0 } : { sx: dx / len * mag, sy: dy / len * mag };
+}
+function resetTouch() {
+  touchInput.sx = touchInput.sy = 0; touchInput.sprint = false;
+  stickBase.style.display = stickKnob.style.display = 'none';
+  btnSprint.classList.remove('held');
+}
+function enableTouch() { touchEnabled = true; touchEl.classList.add('on'); }
+
+const stickZone = document.getElementById('stickZone'), stickBase = document.getElementById('stickBase');
+const stickKnob = document.getElementById('stickKnob'), btnSprint = document.getElementById('btnSprint');
+const btnUse = document.getElementById('btnUse'), btnPause = document.getElementById('btnPause');
+let stickId = null, stickOx = 0, stickOy = 0;
+function place(el, x, y) { el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.display = 'block'; }
+function moveStick(e) {
+  const r = CONFIG.TOUCH_STICK_RADIUS, dx = e.clientX - stickOx, dy = e.clientY - stickOy, len = Math.hypot(dx, dy) || 1;
+  Object.assign(touchInput, touchStick(dx, dy));
+  const k = Math.min(1, r / len);
+  place(stickKnob, stickOx + dx * k, stickOy + dy * k);
+}
+stickZone.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' || stickId !== null || state.mode !== 'play') return;
+  stickId = e.pointerId; stickOx = e.clientX; stickOy = e.clientY;
+  stickZone.setPointerCapture(e.pointerId);
+  place(stickBase, stickOx, stickOy); moveStick(e);
+});
+stickZone.addEventListener('pointermove', e => { if (e.pointerId === stickId && state.mode === 'play') moveStick(e); });
+const endStick = e => { if (e.pointerId === stickId) { stickId = null; resetTouch(); } };
+stickZone.addEventListener('pointerup', endStick);
+stickZone.addEventListener('pointercancel', endStick);
+
+btnUse.addEventListener('pointerdown', () => { if (state.mode === 'play') state.interactQueued = true; });
+btnPause.addEventListener('pointerdown', () => { if (state.mode === 'play') pause(); });
+const sprintOn = e => { if (state.mode === 'play') { touchInput.sprint = true; btnSprint.classList.add('held'); e.target.setPointerCapture(e.pointerId); } };
+const sprintOff = () => { touchInput.sprint = false; btnSprint.classList.remove('held'); };
+btnSprint.addEventListener('pointerdown', sprintOn);
+btnSprint.addEventListener('pointerup', sprintOff);
+btnSprint.addEventListener('pointercancel', sprintOff);
+// Show the controls on touch-first devices, or as soon as a finger touches the page.
+if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) enableTouch();
+window.addEventListener('pointerdown', e => { if (e.pointerType === 'touch' && !touchEnabled) enableTouch(); });
+window.addEventListener('contextmenu', e => { if (touchEnabled) e.preventDefault(); });
+
 function resize() {
   dpr = Math.min(2, window.devicePixelRatio || 1);
   canvas.width = dark.width = Math.round(window.innerWidth * dpr);
@@ -1039,17 +1336,20 @@ let last = performance.now(), acc = 0;
 function frame(now) {
   const dt = Math.min(0.25, (now - last) / 1000);
   last = now;
+  pollGamepad();
   if (state.mode === 'play') {
     acc += dt;
     while (acc >= STEP && state.mode === 'play') { update(STEP); acc -= STEP; }
   } else acc = 0;
+  musicUpdate(state.mode, phaseInfo(state.t).darkness, state.mode === 'play' ? chaseIntensity(state.monsters, state.player) : 0);
   render(dt);
   requestAnimationFrame(frame);
 }
 
 window.IslandGame = {
   CONFIG, phaseInfo, updateHunger, applyLifeLoss, generateIsland, toScreen, toWorld,
-  get state() { return state; }, newGame, update, render, startPlay,
+  get state() { return state; }, newGame, update, render, startPlay, readPad, pollGamepad, padInput, touchStick, touchInput, resetTouch,
+  musicMix, chaseIntensity, music, musicStart, musicUpdate, toggleMute, sfx, SFX,
 };
 
 resize();

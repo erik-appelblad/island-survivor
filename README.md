@@ -1,6 +1,6 @@
 # Island Survival
 
-A small 2.5D isometric survival game that runs in the browser. Collect food on a generated island by day, and avoid the monsters by night. Day and night last 2 minutes each, and you have 10 lives. Survive a night and a white portal takes you to a new island.
+A small 2.5D isometric survival game that runs in the browser. Collect food on a generated island by day, and avoid the monsters by night. Day and night last 2 minutes each, and you have 5 lives. Survive a night and a white portal takes you to a new island.
 
 The whole game is one self-contained file, [src/index.html](src/index.html), with no dependencies and no build step.
 
@@ -15,7 +15,7 @@ npm run dev    # serves src/ with npx serve
 ## How it plays
 
 - **Moving:** WASD or the arrow keys move you, Shift sprints, and E eats food, searches the wreck or uses a portal. P or Esc pauses.
-- **Hunger and lives:** hunger runs out in about 2.5 minutes, so keep eating. When it hits 0 you lose a life and hunger refills to half. A monster catch also costs a life and sends you back to the beach.
+- **Hunger and lives:** you start hungry (20 out of 100), and a full stomach lasts only about 75 seconds, so find food first. Hiding in the cave drains hunger twice as fast. When hunger hits 0 you lose a life and it refills to a fifth. A monster catch also costs a life and sends you back to the beach.
 - **Night:** monsters appear at nightfall, and 2 more come each night. They chase you if you move nearby, but you can outrun them by sprinting. They can't follow you through a portal or into the cave.
 - **Portals:** there are 3 linked portal pairs that teleport you across the island. One pair is hidden until you get close to it.
 - **New islands:** each time you survive a night, a big white portal opens near you. Enter it during the day to travel to a brand-new island. Your lives, hunger and day count carry over, and the secrets reset. If you don't use it, it fades at nightfall.
