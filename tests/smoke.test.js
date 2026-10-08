@@ -170,6 +170,45 @@ test('the white portal fades at nightfall if unused', () => {
   assert.equal(st().exitPortal, null);
 });
 
+// --- Gamepad ---
+const mkPad = (axes = [0, 0], down = []) => ({ connected: true, axes,
+  buttons: Array.from({ length: 17 }, (_, i) => ({ pressed: down.includes(i) })) });
+const setPads = pad => { Object.defineProperty(global, 'navigator', { value: { getGamepads: () => [pad] }, configurable: true }); };
+
+test('readPad: deadzone, stick, D-pad and buttons', () => {
+  assert.deepEqual([G.readPad(mkPad([0.1, -0.1])).sx, G.readPad(mkPad([0.1, -0.1])).sy], [0, 0]);
+  const r = G.readPad(mkPad([0.8, -0.6], [1, 14]));
+  assert.equal(r.sx, 0.8 - 1); assert.equal(r.sy, -0.6);
+  assert.equal(r.sprint, true); assert.equal(r.interact, false);
+  assert.equal(G.readPad(mkPad([0, 0], [13])).sy, 1);
+  assert.equal(G.readPad(mkPad([0, 0], [0])).interact, true);
+  assert.equal(G.readPad(mkPad([0, 0], [9])).pause, true);
+});
+
+test('gamepad: stick moves the player, A interacts once, Start pauses and resumes', () => {
+  G.newGame(7); G.startPlay();
+  const p = st().player, x0 = p.x, y0 = p.y;
+  setPads(mkPad([0, 0], [])); G.pollGamepad(); // clear previous button state
+  setPads(mkPad([1, 0])); G.pollGamepad();
+  for (let i = 0; i < 20; i++) G.update(STEP);
+  assert.ok(Math.hypot(p.x - x0, p.y - y0) > 0.1, 'player moved');
+  setPads(mkPad([0, 0], [0])); G.pollGamepad();
+  assert.equal(st().interactQueued, true);
+  st().interactQueued = false; G.pollGamepad();
+  assert.equal(st().interactQueued, false, 'held button does not retrigger');
+  setPads(mkPad([0, 0], [9])); G.pollGamepad();
+  assert.equal(st().mode, 'paused');
+  setPads(mkPad()); G.pollGamepad();
+  setPads(mkPad([0, 0], [9])); G.pollGamepad();
+  assert.equal(st().mode, 'play');
+  assert.equal(G.padInput.sx, 0);
+});
+
+test('gamepad: no controller connected is harmless', () => {
+  setPads(null); G.pollGamepad();
+  assert.deepEqual([G.padInput.sx, G.padInput.sy, G.padInput.sprint], [0, 0, false]);
+});
+
 let failed = 0;
 for (const { name, fn } of tests) {
   try { fn(); console.log(`ok   ${name}`); }

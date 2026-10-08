@@ -9,7 +9,7 @@ The whole game is one self-contained file, `src/index.html`, with no dependencie
 ## System Diagram
 
 ```
-keyboard ──► input (keys set) ──► update(dt) fixed 60 Hz ──► state ──► render() every frame
+keyboard / gamepad ──► input (keys set, padInput) ──► update(dt) fixed 60 Hz ──► state ──► render() every frame
                                     │                                  │
                          clock · player · hunger         ground (pre-rendered canvas)
                          monsters · food · discovery     depth-sorted objects
@@ -31,7 +31,7 @@ The script is split into numbered sections:
 
 ## Data Flow
 
-Input adds key codes to a set. `update(dt)` reads that set and changes `state`. `render` only reads `state`. Interaction is edge-triggered: keydown sets `interactQueued`, and the next update uses it.
+Input adds key codes to a set. `pollGamepad()` runs once per frame (the Gamepad API has no button events), writes stick/D-pad/sprint into `padInput` and edge-triggers interact and pause/start. It assumes the standard mapping (Xbox and most modern pads); button indices and the deadzone live in `CONFIG`. `update(dt)` reads that set and changes `state`. `render` only reads `state`. Interaction is edge-triggered: keydown sets `interactQueued`, and the next update uses it.
 
 ## Configuration
 
@@ -58,3 +58,4 @@ Static file. Open `src/index.html` directly or serve the folder (e.g. `npx serve
 - Sound effects and music.
 - Save/high score persistence.
 - Touch controls for mobile.
+- Gamepad menu navigation and rebinding.

@@ -44,6 +44,8 @@ const CONFIG = {
   BUSHES: 18, PALMS: 12, BERRY_REGROW: 60, GOLDEN_REGROW: 90, NIGHT_GROWTH: 0.25,
   MAX_MUSHROOMS: 8, MUSHROOM_INTERVAL: 8, COCONUT_INTERVAL: [25, 45], COCONUTS_PER_PALM: 2,
   INTERACT_RANGE: 1.0, LIGHT_RADIUS: 170, DEBUG_TIME_SCALE: 20,
+  // Gamepad (standard mapping): button indices and stick deadzone
+  PAD_DEADZONE: 0.25, PAD_INTERACT: [0], PAD_SPRINT: [1, 7], PAD_PAUSE: [9],
 };
 const FOOD = {
   berry: { value: 15, label: 'berries' },
@@ -328,6 +330,7 @@ function applyLifeLoss(lives) {
 // ===== 6. GAME STATE & SYSTEMS =====
 let state;
 const keys = new Set();
+const padInput = { sx: 0, sy: 0, sprint: false };
 
 function newGame(seed = Math.floor(Math.random() * 1e9)) {
   const p = { x: 0, y: 0, dz: 0, hunger: CONFIG.MAX_HUNGER, lives: CONFIG.START_LIVES,
@@ -410,7 +413,7 @@ function update(dt) {
 
 function updatePlayer(dt) {
   const p = state.player, w = state.world;
-  let sx = 0, sy = 0;
+  let sx = padInput.sx, sy = padInput.sy;
   if (keys.has('KeyW') || keys.has('ArrowUp')) sy -= 1;
   if (keys.has('KeyS') || keys.has('ArrowDown')) sy += 1;
   if (keys.has('KeyA') || keys.has('ArrowLeft')) sx -= 1;
@@ -418,7 +421,7 @@ function updatePlayer(dt) {
   // Screen-space input -> iso world direction
   const wx = sx + sy, wy = -sx + sy, len = Math.hypot(wx, wy);
   p.moving = len > 0;
-  p.sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  p.sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight') || padInput.sprint;
   if (p.moving) {
     let sp = p.sprinting ? CONFIG.SPRINT_SPEED : CONFIG.WALK_SPEED;
     if (TILE_INFO[tileAt(w, p.x, p.y)].slow) sp *= CONFIG.FOREST_SLOW;
@@ -982,6 +985,7 @@ const SCREENS = {
       <kbd>Shift</kbd><span>Sprint (you get hungry faster)</span>
       <kbd>E</kbd><span>Eat, search, use a portal</span>
       <kbd>P / Esc</kbd><span>Pause</span>
+      <kbd>Gamepad</kbd><span>Stick/D-pad move · A use · B/RT sprint · Start pause</span>
     </div>
     <p>You have ${CONFIG.START_LIVES} lives. Find the portals and the 3 secret places.</p>
     <button data-action="start">Start</button>`,
@@ -1027,6 +1031,36 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
 
+// Gamepad: polled once per frame (the API has no button events). Standard mapping assumed.
+const padPrev = { interact: false, pause: false };
+function pressed(pad, list) { return list.some(i => pad.buttons[i] && pad.buttons[i].pressed); }
+function readPad(pad) {
+  const dz = CONFIG.PAD_DEADZONE, b = i => (pad.buttons[i] && pad.buttons[i].pressed ? 1 : 0);
+  let x = pad.axes[0] || 0, y = pad.axes[1] || 0;
+  if (Math.hypot(x, y) < dz) x = y = 0;
+  x += b(15) - b(14); y += b(13) - b(12); // D-pad right/left, down/up
+  return { sx: x, sy: y, sprint: pressed(pad, CONFIG.PAD_SPRINT),
+    interact: pressed(pad, CONFIG.PAD_INTERACT), pause: pressed(pad, CONFIG.PAD_PAUSE) };
+}
+function pollGamepad() {
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+  const pad = pads.find(p => p.connected !== false);
+  const r = pad ? readPad(pad) : { sx: 0, sy: 0, sprint: false, interact: false, pause: false };
+  const mode = state.mode;
+  const pInteract = r.interact && !padPrev.interact, pPause = r.pause && !padPrev.pause;
+  padPrev.interact = r.interact; padPrev.pause = r.pause;
+  const play = mode === 'play';
+  padInput.sx = play ? r.sx : 0; padInput.sy = play ? r.sy : 0; padInput.sprint = play && r.sprint;
+  if (play) {
+    if (pInteract) state.interactQueued = true;
+    else if (pPause) pause();
+  } else if (pPause || pInteract) {
+    if (mode === 'paused' && pPause) resume();
+    else if (mode === 'title') startPlay();
+    else if (mode === 'over' && pPause) restart(); // not A, so mashing it can't skip the game-over screen
+  }
+}
+
 function resize() {
   dpr = Math.min(2, window.devicePixelRatio || 1);
   canvas.width = dark.width = Math.round(window.innerWidth * dpr);
@@ -1039,6 +1073,7 @@ let last = performance.now(), acc = 0;
 function frame(now) {
   const dt = Math.min(0.25, (now - last) / 1000);
   last = now;
+  pollGamepad();
   if (state.mode === 'play') {
     acc += dt;
     while (acc >= STEP && state.mode === 'play') { update(STEP); acc -= STEP; }
@@ -1049,7 +1084,7 @@ function frame(now) {
 
 window.IslandGame = {
   CONFIG, phaseInfo, updateHunger, applyLifeLoss, generateIsland, toScreen, toWorld,
-  get state() { return state; }, newGame, update, render, startPlay,
+  get state() { return state; }, newGame, update, render, startPlay, readPad, pollGamepad, padInput,
 };
 
 resize();
