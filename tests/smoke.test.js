@@ -247,6 +247,70 @@ test('touch: sprint flag makes the player faster', () => {
   assert.ok(run(true) > run(false));
 });
 
+test('musicMix: equal-power crossfade between day and night', () => {
+  const d = G.musicMix(0), n = G.musicMix(1), h = G.musicMix(0.5);
+  assert.ok(Math.abs(d.day - 1) < 1e-9 && Math.abs(d.night) < 1e-9);
+  assert.ok(Math.abs(n.night - 1) < 1e-9 && Math.abs(n.day) < 1e-9);
+  assert.ok(Math.abs(h.day ** 2 + h.night ** 2 - 1) < 1e-9);
+});
+
+test('chaseIntensity: only chasing monsters count, and closer is more intense', () => {
+  const p = { x: 10, y: 10 }, m = (x, state, fading = false) => ({ x, y: 10, state, fading });
+  assert.equal(G.chaseIntensity([], p), 0);
+  assert.equal(G.chaseIntensity([m(12, 'wander'), m(11, 'chase', true)], p), 0);
+  const far = G.chaseIntensity([m(18, 'chase')], p), near = G.chaseIntensity([m(11.5, 'chase')], p);
+  assert.ok(far >= 0.4 && near > far && near <= 1);
+  assert.equal(G.chaseIntensity([m(18, 'chase'), m(11.5, 'chase')], p), near); // the nearest chaser decides
+});
+
+test('music: silent without Web Audio, and the day/night layers follow the darkness', () => {
+  G.newGame(3); G.startPlay(); // no AudioContext in this environment: must be harmless
+  assert.equal(G.music.ctx, null);
+  G.musicUpdate('play', 0);
+
+  let oscillators = 0;
+  const param = () => ({ value: 0, setValueAtTime: noop, linearRampToValueAtTime: noop, setTargetAtTime(v) { this.value = v; } });
+  const node = () => ({ connect: noop, gain: param(), delayTime: param() });
+  global.AudioContext = class {
+    constructor() { this.currentTime = 0; this.state = 'running'; this.destination = {}; }
+    createGain() { return node(); }
+    createDelay() { return node(); }
+    createOscillator() { oscillators++; return { ...node(), frequency: { exponentialRampToValueAtTime: noop }, detune: {}, start: noop, stop: noop }; }
+    createBiquadFilter() { return { ...node(), frequency: {} }; }
+    resume() {}
+  };
+  try {
+    G.musicStart();
+    assert.ok(G.music.ctx);
+    G.music.ctx.currentTime = 1;
+    G.musicUpdate('play', 0); // full day
+    assert.ok(G.music.layers.day.bus.gain.value > 0.99 && G.music.layers.night.bus.gain.value < 0.01);
+    assert.ok(oscillators > 0);
+    G.music.ctx.currentTime = 2;
+    G.musicUpdate('play', 1); // full night
+    assert.ok(G.music.layers.night.bus.gain.value > 0.99 && G.music.layers.day.bus.gain.value < 0.01);
+
+    G.music.ctx.currentTime = 3;
+    for (let i = 0; i < 60; i++) { G.music.ctx.currentTime += 0.05; G.musicUpdate('play', 1, 1); } // being chased
+    assert.ok(G.music.tension > 0.9 && G.music.layers.chase.bus.gain.value > 0.9);
+    assert.ok(G.music.layers.night.bus.gain.value < 0.7); // night pad steps back
+    for (let i = 0; i < 400; i++) { G.music.ctx.currentTime += 0.05; G.musicUpdate('play', 1, 0); } // escaped
+    assert.ok(G.music.tension < 0.05);
+
+    const full = G.music.master.gain.value;
+    G.musicUpdate('paused', 1);
+    assert.ok(G.music.master.gain.value < full); // ducked while paused
+    const wasMuted = G.music.muted;
+    G.toggleMute(); // muted: no new notes, master gain 0
+    const count = oscillators;
+    G.music.ctx.currentTime = 30;
+    G.musicUpdate('play', 1);
+    assert.equal(G.music.master.gain.value, wasMuted ? full : 0);
+    if (!wasMuted) assert.equal(oscillators, count);
+    G.toggleMute();
+  } finally { delete global.AudioContext; G.music.ctx = null; G.music.layers = {}; }
+});
+
 let failed = 0;
 for (const { name, fn } of tests) {
   try { fn(); console.log(`ok   ${name}`); }

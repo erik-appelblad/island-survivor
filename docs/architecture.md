@@ -27,6 +27,7 @@ The script is split into numbered sections:
 5. **Pure rules**: `phaseInfo(t)`, `updateHunger(...)`, `applyLifeLoss(...)`. These have no side effects and can be tested from the console.
 6. **State & systems**: player movement and collision, monster AI (wander → chase → give up, with a short detour when stuck), food regrowth and spawning, secret and hidden-portal discovery, the white exit portal and island travel, and interaction (`E`).
 7. **Render**: the ground is pre-rendered once per game to an offscreen canvas. Each frame, objects (trees, food, portals, monsters, player) are sorted by iso depth `x + y` and drawn back to front. A darkness layer with radial lights cut out is drawn on top at night, then the HUD.
+7b. **Music**: procedural Web Audio, no asset files. Three generative layers are always scheduled: day (C major, triangle pad and plucks), night (dissonant: diminished chords and semitone clusters, a detuned pad that beats, a drone, a slow tremolo, echo and rare falling shrieks) and chase (a heartbeat plus tritone saw stabs through a low-pass filter). `chaseIntensity(monsters, player)` is a pure function (0 when nothing chases, 0.4–1 rising as the nearest chaser closes in); `musicUpdate` smooths it into a tension value (fast up, slow down) that fades the chase layer in and pulls the night pad back slightly. The layers are scheduled a little ahead of `currentTime` from `musicUpdate`, which runs every frame. `musicMix(darkness)` is a pure equal-power crossfade driven by `phaseInfo`, so the music follows the dusk and dawn fades (and the `T` debug speed). The `AudioContext` is created in `startPlay` (a user gesture, as browsers require). Volume ducks while paused or on game over. `M` toggles mute (saved in `localStorage`). If Web Audio is unavailable the game stays silent.
 8. **Input / UI / loop**: DOM overlay screens (title, pause, game over), and `requestAnimationFrame` with a fixed-step update.
 
 ## Data Flow
@@ -55,6 +56,7 @@ Static file. Open `src/index.html` directly or serve the folder (e.g. `npx serve
 
 ## Open Questions
 
-- Sound effects and music.
+- Sound effects (background music exists; see 7b).
+- On-screen touch mute button (mute is keyboard `M` only).
 - Save/high score persistence.
 - Gamepad menu navigation and rebinding.
