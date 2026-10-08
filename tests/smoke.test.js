@@ -54,8 +54,22 @@ test('updateHunger: drain, sprint and starvation', () => {
   const d = G.CONFIG.HUNGER_DRAIN;
   assert.ok(Math.abs(G.updateHunger(100, 3, false).hunger - (100 - 3 * d)) < 1e-9);
   assert.ok(Math.abs(G.updateHunger(100, 3, true).hunger - (100 - 3 * d * G.CONFIG.SPRINT_HUNGER_MULT)) < 1e-9);
+  assert.ok(Math.abs(G.updateHunger(100, 3, false, true).hunger - (100 - 3 * d * G.CONFIG.SHELTER_HUNGER_MULT)) < 1e-9);
+  assert.equal(G.CONFIG.SHELTER_HUNGER_MULT, 2);
   assert.deepEqual(G.updateHunger(1, 6, false), { hunger: G.CONFIG.HUNGER_AFTER_STARVE, starved: true });
   assert.ok(G.CONFIG.MAX_HUNGER / d <= 150, 'a full stomach lasts at most 2.5 minutes');
+});
+
+test('a new game starts with the configured lives and hunger, and the cave drains hunger faster', () => {
+  G.newGame(7); G.startPlay();
+  const w = st().world, p = st().player;
+  assert.equal(p.lives, 5);
+  assert.equal(p.hunger, G.CONFIG.START_HUNGER);
+  Object.assign(p, { x: w.start.x, y: w.start.y }); p.hunger = 10;
+  G.update(STEP); const outside = 10 - p.hunger;
+  Object.assign(p, { x: w.cave.x + 0.5, y: w.cave.y + 0.5, hunger: 10 });
+  G.update(STEP); const inside = 10 - p.hunger;
+  assert.ok(Math.abs(inside / outside - G.CONFIG.SHELTER_HUNGER_MULT) < 1e-6, `${inside} vs ${outside}`);
 });
 
 test('applyLifeLoss: game over only on the last life', () => {
@@ -88,6 +102,16 @@ test('simulation: several days and nights run without errors', () => {
   }
   assert.ok(st().day >= 5, `reached day ${st().day}`);
   assert.ok(maxMonsters > 0, 'monsters spawned at night');
+});
+
+test('the hidden portal is never revealed near the spawn point', () => {
+  for (let seed = 1; seed <= 200; seed++) {
+    const w = G.generateIsland(seed);
+    if (!w) continue;
+    for (const pt of w.portals.filter(q => q.hidden)) {
+      assert.ok(Math.hypot(pt.x - w.start.x, pt.y - w.start.y) >= G.CONFIG.HIDDEN_PORTAL_MIN_START, `seed ${seed}`);
+    }
+  }
 });
 
 test('portals teleport to their partner', () => {
@@ -137,6 +161,20 @@ test('a monster catch costs a life, and the last life ends the game', () => {
   assert.equal(st().mode, 'over');
 });
 
+test('after a monster catch, monsters near the respawn point are moved away', () => {
+  G.newGame(7); G.startPlay();
+  const w = st().world, p = st().player, k = w.spawnTiles[0], D = G.CONFIG.MONSTER_SPAWN_DIST;
+  Object.assign(p, { x: k % w.N + 0.5, y: Math.floor(k / w.N) + 0.5 });
+  const nearStart = [[1, 0], [0, 2], [-2, 1], [3, 3]].map(([dx, dy]) => monster(w.start.x + dx, w.start.y + dy));
+  st().monsters = [monster(p.x, p.y), ...nearStart];
+  G.update(STEP);
+  assert.equal(p.x, w.start.x);
+  for (const m of st().monsters) {
+    assert.ok(Math.hypot(m.x - w.start.x, m.y - w.start.y) >= D, 'monster at distance ' + Math.hypot(m.x - w.start.x, m.y - w.start.y));
+    assert.equal(m.state, 'wander');
+  }
+});
+
 test('surviving the night opens a white portal that leads to a new island', () => {
   G.newGame(7); G.startPlay();
   const p = st().player, oldWorld = st().world;
@@ -147,14 +185,14 @@ test('surviving the night opens a white portal that leads to a new island', () =
   const d = Math.hypot(ep.x - p.x, ep.y - p.y);
   assert.ok(d >= G.CONFIG.EXIT_PORTAL_DIST[0] && d <= G.CONFIG.EXIT_PORTAL_DIST[1] + 1, `portal distance ${d}`);
 
-  Object.assign(p, { x: ep.x, y: ep.y, lives: 6, hunger: 40 });
+  Object.assign(p, { x: ep.x, y: ep.y, lives: 4, hunger: 40 });
   st().secrets.grove = true;
   st().interactQueued = true;
   G.update(STEP);
   assert.notEqual(st().world, oldWorld, 'new island generated');
   assert.equal(st().island, 2);
   assert.equal(st().exitPortal, null);
-  assert.equal(p.lives, 6, 'lives carry over');
+  assert.equal(p.lives, 4, 'lives carry over');
   assert.ok(p.hunger > 39, 'hunger carries over');
   assert.equal(st().secrets.grove, false, 'secrets reset per island');
   assert.equal(p.x, st().world.start.x);

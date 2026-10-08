@@ -2,7 +2,7 @@
 
 ## Overview
 
-Island Survival is a 2.5D (isometric) browser game. During the day the player collects food on a generated island. At night the player avoids monsters. A full day/night cycle lasts 4 minutes: 2 min of day and 2 min of night. Hunger drains over time (a full stomach lasts 2.5 min). Starving or being caught by a monster costs one of 10 lives. The island also has 3 linked portal pairs (one hidden) and 3 secret locations. After each survived night, a white exit portal opens near the player. It leads to a newly generated island.
+Island Survival is a 2.5D (isometric) browser game. During the day the player collects food on a generated island. At night the player avoids monsters. A full day/night cycle lasts 4 minutes: 2 min of day and 2 min of night. Hunger drains over time (a full stomach lasts 75 s; the player starts at 20 of 100, and hunger drains twice as fast in the cave shelter). Starving or being caught by a monster costs one of 5 lives. The island also has 3 linked portal pairs (one hidden) and 3 secret locations. After each survived night, a white exit portal opens near the player. It leads to a newly generated island.
 
 The whole game is one self-contained file, `src/index.html`, with no dependencies and no build step.
 
@@ -51,7 +51,7 @@ Static file. Open `src/index.html` directly or serve the folder (e.g. `npx serve
 - **Canvas 2D, no libraries.** Keeps the game a single readable file.
 - **Teleport-only portals.** Secret locations are on the main map: hidden grove (golden fruit), cave shelter (monsters can't enter) and shipwreck (one-time food stash).
 - **Island travel via `loadIsland(world)`.** `newGame` creates the state that lasts the whole run (lives, hunger, clock, stats). `loadIsland` swaps in a new world and resets the per-island state (items, monsters, secrets, wreck). The white portal spawns at dawn (`spawnExitPortal`) 2–5 tiles from the player and fades at nightfall if unused.
-- **Hunger drains lives.** At 0 hunger you lose a life and hunger resets to 50. A monster hit costs a life, respawns you on the beach and gives 3 s of invulnerability.
+- **Hunger drains lives.** At 0 hunger you lose a life and hunger resets to 20. A monster hit costs a life, respawns you on the beach and gives 3 s of invulnerability.
 - **Only the clock is sped up by the debug key,** so testing the day/night cycle doesn't also starve the player.
 
 ## Open Questions

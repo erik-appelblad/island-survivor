@@ -53,14 +53,14 @@
 const CONFIG = {
   MAP_SIZE: 48,
   DAY_LENGTH: 240, NIGHT_START: 120, FADE: 15,
-  START_LIVES: 10, MAX_HUNGER: 100, HUNGER_DRAIN: 2 / 3, SPRINT_HUNGER_MULT: 2, HUNGER_AFTER_STARVE: 50,
+  START_LIVES: 5, MAX_HUNGER: 100, START_HUNGER: 20, HUNGER_DRAIN: 4 / 3, SPRINT_HUNGER_MULT: 4, SHELTER_HUNGER_MULT: 2, HUNGER_AFTER_STARVE: 20,
   EXIT_PORTAL_DIST: [2, 5], EXIT_PORTAL_SCALE: 1.7,
   WALK_SPEED: 3.2, SPRINT_SPEED: 4.8, FOREST_SLOW: 0.65, PLAYER_RADIUS: 0.25, MONSTER_RADIUS: 0.3,
-  INVULN_TIME: 3, PORTAL_COOLDOWN: 2, PORTAL_PAIRS: 3, HIDDEN_PORTAL_RANGE: 2,
+  INVULN_TIME: 3, PORTAL_COOLDOWN: 2, PORTAL_PAIRS: 3, HIDDEN_PORTAL_RANGE: 2, HIDDEN_PORTAL_MIN_START: 10,
   MONSTER_BASE: 4, MONSTER_PER_DAY: 2, MONSTER_MAX: 16,
   MONSTER_WANDER_SPEED: 1.4, MONSTER_CHASE_SPEED: 3.5, MONSTER_SPEED_PER_DAY: 0.1, MONSTER_SPEED_MAX: 4.4,
   MONSTER_DETECT: 6, MONSTER_DETECT_STILL: 3.5, MONSTER_GIVE_UP: 10, MONSTER_HIT_DIST: 0.55, MONSTER_SPAWN_DIST: 12,
-  BUSHES: 18, PALMS: 12, BERRY_REGROW: 60, GOLDEN_REGROW: 90, NIGHT_GROWTH: 0.25,
+  BUSHES: 18, PALMS: 12, BERRY_REGROW: 60, GOLDEN_REGROW: 120, NIGHT_GROWTH: 0.25,
   MAX_MUSHROOMS: 8, MUSHROOM_INTERVAL: 8, COCONUT_INTERVAL: [25, 45], COCONUTS_PER_PALM: 2,
   INTERACT_RANGE: 1.0, LIGHT_RADIUS: 170, DEBUG_TIME_SCALE: 20,
   // Gamepad (standard mapping): button indices and stick deadzone
@@ -73,7 +73,7 @@ const FOOD = {
   berry: { value: 15, label: 'berries' },
   coconut: { value: 25, label: 'coconut' },
   mushroom: { value: 10, label: 'mushroom' },
-  golden: { value: 100, label: 'golden fruit' },
+  golden: { value: 50, label: 'golden fruit' },
 };
 const T = { DEEP: 0, SHALLOW: 1, SAND: 2, GRASS: 3, FOREST: 4, HILL: 5, ROCK: 6, THICKET: 7, CAVE: 8 };
 const TILE_INFO = [
@@ -272,6 +272,8 @@ function tryGenerate(seed) {
       if (occ[a] || occ[b]) continue;
       const ax = a % N + 0.5, ay = ((a / N) | 0) + 0.5, bx = b % N + 0.5, by = ((b / N) | 0) + 0.5;
       if (dist(ax, ay, bx, by) < minPair) continue;
+      // keep the hidden portal out of reach of the spawn point, so it isn't revealed within seconds
+      if (hidden && (dist(ax, ay, start.x + 0.5, start.y + 0.5) < CONFIG.HIDDEN_PORTAL_MIN_START || dist(bx, by, start.x + 0.5, start.y + 0.5) < CONFIG.HIDDEN_PORTAL_MIN_START)) continue;
       if (portals.some(q => dist(q.x, q.y, ax, ay) < minSep || dist(q.x, q.y, bx, by) < minSep)) continue;
       const pa = { x: ax, y: ay, pair: p, hidden, discovered: !hidden };
       const pb = { x: bx, y: by, pair: p, hidden, discovered: !hidden };
@@ -339,8 +341,9 @@ function phaseInfo(t) {
   else darkness = 1 - (t - (L - f)) / f;
   return { isNight, darkness, timeLeft: isNight ? L - t : ns - t, dawn: isNight && t >= L - f };
 }
-function updateHunger(hunger, dt, sprinting) {
-  const h = hunger - dt * CONFIG.HUNGER_DRAIN * (sprinting ? CONFIG.SPRINT_HUNGER_MULT : 1);
+function updateHunger(hunger, dt, sprinting, sheltered = false) { // hiding in the cave drains faster, to push the player out
+  const mult = (sprinting ? CONFIG.SPRINT_HUNGER_MULT : 1) * (sheltered ? CONFIG.SHELTER_HUNGER_MULT : 1);
+  const h = hunger - dt * CONFIG.HUNGER_DRAIN * mult;
   if (h <= 0) return { hunger: CONFIG.HUNGER_AFTER_STARVE, starved: true };
   return { hunger: h, starved: false };
 }
@@ -357,7 +360,7 @@ const touchInput = { sx: 0, sy: 0, sprint: false };
 let touchEnabled = false;
 
 function newGame(seed = Math.floor(Math.random() * 1e9)) {
-  const p = { x: 0, y: 0, dz: 0, hunger: CONFIG.MAX_HUNGER, lives: CONFIG.START_LIVES,
+  const p = { x: 0, y: 0, dz: 0, hunger: CONFIG.START_HUNGER, lives: CONFIG.START_LIVES,
     invuln: 0, portalCd: 0, moving: false, sprinting: false, face: 1 };
   state = {
     mode: 'title', t: 0, day: 1, island: 1, nightActive: false, player: p,
@@ -413,7 +416,7 @@ function update(dt) {
   if (ph.dawn) for (const m of s.monsters) m.fading = true;
 
   updatePlayer(dt);
-  const hr = updateHunger(p.hunger, dt, p.sprinting && p.moving);
+  const hr = updateHunger(p.hunger, dt, p.sprinting && p.moving, playerInShelter());
   p.hunger = hr.hunger;
   if (hr.starved) loseLife('starve');
   if (s.mode !== 'play') return;
@@ -469,15 +472,29 @@ function loseLife(reason) {
     p.x = s.world.start.x; p.y = s.world.start.y; p.dz = elevAt(s.world, p.x, p.y);
     p.invuln = CONFIG.INVULN_TIME;
     s.cam = toScreen(p.x, p.y, p.dz);
-    for (const m of s.monsters) m.state = 'wander';
+    // Monsters near the respawn point move away, so the player isn't spotted straight away.
+    const pool = farSpawnTiles(p.x, p.y), N = s.world.N;
+    for (const m of s.monsters) {
+      m.state = 'wander';
+      if (!pool.length || Math.hypot(m.x - p.x, m.y - p.y) >= CONFIG.MONSTER_SPAWN_DIST) continue;
+      const k = pool[Math.floor(Math.random() * pool.length)];
+      m.x = k % N + 0.5; m.y = ((k / N) | 0) + 0.5; m.dz = elevAt(s.world, m.x, m.y);
+      m.alpha = 0; m.stuck = 0; m.detour = 0; // fades back in at its new spot
+    }
   }
+}
+
+// Monster spawn tiles at least MONSTER_SPAWN_DIST from (x, y), or all of them if none are that far.
+function farSpawnTiles(x, y) {
+  const w = state.world, N = w.N;
+  const far = w.spawnTiles.filter(k => Math.hypot(k % N + 0.5 - x, ((k / N) | 0) + 0.5 - y) >= CONFIG.MONSTER_SPAWN_DIST);
+  return far.length ? far : w.spawnTiles;
 }
 
 function spawnMonsters() {
   const s = state, w = s.world, p = s.player, N = w.N;
   const count = Math.min(CONFIG.MONSTER_MAX, CONFIG.MONSTER_BASE + CONFIG.MONSTER_PER_DAY * (s.day - 1));
-  const far = w.spawnTiles.filter(k => Math.hypot(k % N + 0.5 - p.x, ((k / N) | 0) + 0.5 - p.y) >= CONFIG.MONSTER_SPAWN_DIST);
-  const pool = far.length ? far : w.spawnTiles;
+  const pool = farSpawnTiles(p.x, p.y);
   for (let i = 0; i < count && pool.length; i++) {
     const k = pool[Math.floor(Math.random() * pool.length)];
     const x = k % N + 0.5, y = ((k / N) | 0) + 0.5;
