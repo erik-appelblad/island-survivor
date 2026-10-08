@@ -311,6 +311,70 @@ test('music: silent without Web Audio, and the day/night layers follow the darkn
   } finally { delete global.AudioContext; G.music.ctx = null; G.music.layers = {}; }
 });
 
+test('sound effects: eating, portals, secrets, monster hits and the white portal each play a sound', () => {
+  const audio = { osc: 0, noise: 0 };
+  const param = () => ({ value: 0, setValueAtTime: noop, linearRampToValueAtTime: noop, setTargetAtTime: noop });
+  const node = () => ({ connect: noop, gain: param(), delayTime: param() });
+  global.AudioContext = class {
+    constructor() { this.currentTime = 0; this.state = 'running'; this.destination = {}; }
+    createGain() { return node(); }
+    createDelay() { return node(); }
+    createBiquadFilter() { return { ...node(), frequency: {} }; }
+    createOscillator() { audio.osc++; return { ...node(), frequency: { exponentialRampToValueAtTime: noop }, detune: {}, start: noop, stop: noop }; }
+    createBuffer(ch, len) { return { getChannelData: () => new Float32Array(len) }; }
+    createBufferSource() { audio.noise++; return { ...node(), start: noop, stop: noop }; }
+    resume() {}
+  };
+  const tonesIn = name => G.SFX[name].filter(r => r[1] !== 'noise').length;
+  const played = (action, name) => { // run the action and check how many oscillators it started
+    const before = audio.osc;
+    action();
+    assert.equal(audio.osc - before, tonesIn(name), `${name}: ${audio.osc - before} tones`);
+  };
+  try {
+    G.newGame(7); G.startPlay();
+    const w = st().world, p = st().player;
+    G.musicUpdate('play', 0); // schedule some music first so the counts below start from a known point
+    audio.osc = 0;
+
+    Object.assign(p, { x: w.start.x, y: w.start.y });
+    st().items.push({ x: p.x, y: p.y, kind: 'berry' });
+    st().interactQueued = true;
+    played(() => G.update(STEP), 'eat');
+
+    const pt = w.portals[0];
+    Object.assign(p, { x: pt.x, y: pt.y, portalCd: 0 });
+    st().interactQueued = true;
+    played(() => G.update(STEP), 'portal');
+
+    Object.assign(p, { x: w.cave.x + 0.5, y: w.cave.y + 0.5 });
+    played(() => G.update(STEP), 'secret');
+
+    const k = w.spawnTiles[0];
+    Object.assign(p, { x: k % w.N + 0.5, y: Math.floor(k / w.N) + 0.5, invuln: 0 });
+    st().monsters = [monster(p.x, p.y)];
+    const noise = audio.noise;
+    played(() => G.update(STEP), 'hit');
+    assert.equal(audio.noise - noise, 1, 'hit also plays a noise burst');
+
+    Object.assign(p, { hunger: 0.001 });
+    played(() => G.update(STEP), 'starve');
+
+    st().t = G.CONFIG.DAY_LENGTH - 0.001;
+    played(() => G.update(STEP), 'reveal');
+    const ep = st().exitPortal;
+    Object.assign(p, { x: ep.x, y: ep.y });
+    st().interactQueued = true;
+    played(() => G.update(STEP), 'exit');
+
+    G.toggleMute(); // muted: no sound effects
+    const before = audio.osc;
+    G.sfx('eat'); G.sfx('nonexistent');
+    assert.equal(audio.osc, before);
+    G.toggleMute();
+  } finally { delete global.AudioContext; G.music.ctx = null; G.music.layers = {}; G.music.sfx = null; }
+});
+
 let failed = 0;
 for (const { name, fn } of tests) {
   try { fn(); console.log(`ok   ${name}`); }
